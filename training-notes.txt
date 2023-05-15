@@ -1,0 +1,17 @@
+Data
+    - Getting the GLUE dataset
+    - Grabbing x% of the data
+    Constructing episodes out of it
+        Use the function provided by learn2learn
+    Ability to cross-generate episodes
+Constructing Lines
+    Importing the code
+    Running it here and trying to reproduce the steps to have R initialised
+    Generate few shot lines
+    Generate lines from GLUE dataset
+Training
+    Implement FOMAML with different learnable layers
+    Implement ProtoFOMAML
+    Capturing metrics and logs
+Testing
+    Periodic testing (triggered at user-defined checkpoints)
