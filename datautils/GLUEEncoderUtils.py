@@ -1,7 +1,9 @@
 import numpy as np
 import torch
+
 from datasets import Dataset
 from transformers import BertTokenizer, BertModel
+from random import randint
 
 BERT_INPUT_DIMS = 768
 
@@ -19,8 +21,6 @@ Return the episodic datautils with encoded data points.
 If there are two sentences (for example in an entailment task), concatenate the sentences in the form
 [CLS] <sentence_1> SEP <sentence_2> SEP
 """
-
-
 def get_labelled_GLUE_episodic_training_data(dataset: Dataset):
     model = get_model()
     tokenizer = get_tokenizer()
@@ -35,7 +35,7 @@ def get_labelled_GLUE_episodic_training_data(dataset: Dataset):
             outputs = model(**inputs)
             encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
             training_encodings.append(encoding)
-        return torch.stack(training_encodings, dim=0), np.array(training_labels)
+        return torch.stack(training_encodings, dim=0), torch.Tensor(training_labels)
 
     else:
         sentences = dataset['train']['sentence']
@@ -44,4 +44,4 @@ def get_labelled_GLUE_episodic_training_data(dataset: Dataset):
             outputs = model(**inputs)
             encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
             training_encodings.append(encoding)
-        return torch.stack(training_encodings, dim=0), np.array(training_labels)
+        return torch.stack(training_encodings, dim=0), torch.Tensor(training_labels)

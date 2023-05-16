@@ -4,6 +4,8 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score
 from transformers import AdamW, get_constant_schedule_with_warmup
 from pathlib import Path
+
+from datautils.GLUEDataUtils import get_random_GLUE_dataset
 from lines.LineGenerator import LineGenerator
 from training_datasets.EncodingDataset import EncodingDataset
 from torch.utils.data import DataLoader
@@ -12,9 +14,10 @@ import matplotlib.pyplot as plt
 
 from datautils.LEOPARDEncoderUtils import read_test_data as read_test_data_bert
 
+
 # TODO save the best model
 # TODO implement early stopping
-class ClassifierTrainerWithCrossEntropyNoGen:
+class FOMAML:
 
     def __init__(self, lineGenerator: LineGenerator, trainingParams, params, labelKeys):
         self.lines = lineGenerator.generateLines()
@@ -23,23 +26,65 @@ class ClassifierTrainerWithCrossEntropyNoGen:
         self.printValidationPlot = params['printValidationPlot']
         self.printValidationLoss = params['printValidationLoss']
         self.labelKeys = labelKeys
+        # construct meta-episodes with percentages of data
 
     def trainPrototypes(self, params, training_params, training_set):
         """
-        get two prototypes at the end of the line
-        compute the label and compare it with the true label
-        generate the loss
-        distribute by the reverse of the distance between the two and
-        learn the parameters via backpropagation
-        :param training_params: training parameters
-        :param params: input parameters required for non-training purposes
-        :param training_set: the training set used to train a pair of prototypes
-        :return: None
+        construct an episode from consolidated GLUE data
+        get the saved model, strip the topmost layer and add a classification layer
+        construct prototypes and lines using these models
+        invoke the learn2learn library with Lightning on slurm/other device
+        compute the inner loop loss with it's own optimiser and hyperparameters
+        copy the model
+        compute the outer loop loss with different hyperparameters on the copied model
+        propagate the loss and update parameters of the original model
+        compute validation loss of the dataset
+        if validation loss is the lowest, save the outer loop updated model and discard the inner loop updated model
         """
 
         # Set seeds for reproducibility
         # torch.manual_seed(42)
         # random.seed(42)
+
+        glue_dataset = get_random_GLUE_dataset()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         encodings = training_set["encodings"]
         training_labels = training_set["labels"]
@@ -53,7 +98,8 @@ class ClassifierTrainerWithCrossEntropyNoGen:
 
         criterion = self.getCriterion(params)
 
-        directory = "models/" + params["encoder"] + "/cross_entropy/" + params["category"] + "/" + str(params["episode"]) + "/" + str(params["shot"]) + "/"
+        directory = "models/" + params["encoder"] + "/cross_entropy/" + params["category"] + "/" + str(
+            params["episode"]) + "/" + str(params["shot"]) + "/"
         Path(directory).mkdir(parents=True, exist_ok=True)
 
         for idx, line in enumerate(self.lines):
