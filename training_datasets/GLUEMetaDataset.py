@@ -20,3 +20,6 @@ class GLUEMetaDataset:
 
     def getTask(self):
         return self.taskSet.sample()
+
+    def getTotalTasks(self):
+        return self.taskSet.num_tasks

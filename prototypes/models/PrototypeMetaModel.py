@@ -2,14 +2,9 @@ import torch
 from torch import nn
 from transformers import BertModel, BertTokenizer
 from utils.ModelUtils import get_prototypes
+from utils.Constants import BERT_DIMS, HIDDEN_MODEL_SIZE, PROTOFOMAML
 
 from prototypes.PrototypeModel import PrototypeModel
-
-PROTONET = "ProtoNet"
-PROTOFOMAML = "ProtoFOMAML"
-FOMAML = "FOMAML"
-HIDDEN_MODEL_SIZE = 256
-BERT_DIMS = 768
 
 
 class PrototypeMetaModel(nn.Module, PrototypeModel):
@@ -19,17 +14,12 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
     # for ProtoFOMAML - the weights need to be adjusted
     # outer loop and inner loop learning rates need to be an input
 
-    def __init__(self, metaLearner, classes):
+    def __init__(self):
         super(PrototypeMetaModel, self).__init__()
-        self.metaLearner = metaLearner
-        self.classes = classes
-        self.isOutputLayerInitialised = False if self.metaLearner == PROTOFOMAML else True
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-        self.bert = BertModel.from_pretrained("bert-base-uncased")
-        self.dropout = nn.Dropout(0.3)
+        # self.isOutputLayerInitialised = False if self.metaLearner == PROTOFOMAML else True
+        self.tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
+        self.bert = BertModel.from_pretrained("bert-base-cased")
         self.hidden = nn.Linear(BERT_DIMS, HIDDEN_MODEL_SIZE)
-        self.output = nn.Linear(HIDDEN_MODEL_SIZE, classes)
-        self.relu = nn.ReLU()
 
     def forward(self, inputs, labels):
         if self.isOutputLayerInitialised is False:
@@ -38,9 +28,7 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         outputs = self.bert(**tokenized_inputs)
         encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
         hidden_output = self.hidden(encoding)
-        dropout = self.dropout(hidden_output)
-        output = self.output(dropout)
-        return self.relu(output)
+        return self.relu(hidden_output)
 
     def getEncoder(self):
         return "BERT"
@@ -51,12 +39,23 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         self.linear.bias.grad = self.linear.bias.grad * scalingFactor
         self.hidden.bias.grad = self.hidden_1.bias.grad * scalingFactor
 
-    def initialiseOutputLayer(self, inputs, labels):
-        if self.metaLearner == PROTOFOMAML:
-            # adjust weights
-            prototypes, unique_labels = get_prototypes(inputs, labels)
-            init_weight = 2 * prototypes
-            init_bias = -torch.norm(prototypes, dim=1) ** 2
-            output_weight = init_weight.detach().requires_grad_()
-            output_bias = init_bias.detach().requires_grad_()
-            self.isOutputLayerInitialised = True
+    # def initialiseOutputLayer(self, inputs, labels):
+    #     if self.metaLearner == PROTOFOMAML:
+    #         # adjust weights
+    #         prototypes, unique_labels = get_prototypes(inputs, labels)
+    #         self.output = nn.Linear(HIDDEN_MODEL_SIZE, len(set(labels)))
+    #         init_weight = 2 * prototypes
+    #         init_bias = -torch.norm(prototypes, dim=1) ** 2
+    #         output_weight = init_weight.detach().requires_grad_()
+    #         output_bias = init_bias.detach().requires_grad_()
+    #         self.output.weight = output_weight
+    #         self.output.bias = output_bias
+    #         self.isOutputLayerInitialised = True
+
+
+class Test:
+    def __init__(self, x):
+        self.x = x
+
+    def getX(self):
+        print(self.x)

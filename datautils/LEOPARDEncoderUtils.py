@@ -6,10 +6,8 @@ from transformers import BertTokenizer, BertModel
 from pathlib import Path
 
 from datautils.LEOPARDDataUtils import get_labelled_training_sentences, get_labelled_test_sentences, \
-    get_labelled_validation_sentences, get_categories, DATA_PATH, get_labelled_test_sentences_entity_typing, \
+    get_labelled_validation_sentences, get_categories, get_labelled_test_sentences_entity_typing, \
     get_labelled_training_sentences_entity_typing
-
-BERT_INPUT_DIMS = 768
 
 def get_model():
     return BertModel.from_pretrained("bert-base-cased")
