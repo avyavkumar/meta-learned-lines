@@ -27,7 +27,6 @@ def get_labelled_GLUE_episodic_training_data(episode):
     tokenizer = get_tokenizer()
     training_encodings = []
     training_labels = episode[1]
-    print(training_labels)
     for i in range(len(training_labels)):
         inputs = tokenizer(episode[0][i], return_tensors="pt")
         outputs = model(**inputs)

@@ -17,11 +17,9 @@ class LineGenerator:
 
         centroids, centroid_labels = get_labelled_centroids(training_encodings, training_labels.tolist())
         k = len(centroid_labels)
-        print("computing lines now")
         # invoke Ilia's code
         lines_generated = find_lines_R_multiD(training_encodings.detach().numpy(), training_labels.tolist(),
                                               centroids.detach().numpy(), BERT_DIMS, k - 1)
-        print("Lines have been computed")
         lines = []
         for i in range(len(lines_generated)):
             centroids_required = []

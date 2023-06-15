@@ -1,4 +1,7 @@
+import random
+
 import datasets as huggingface_datasets
+import torch
 from torch.utils.data import Dataset
 
 
@@ -6,6 +9,7 @@ class GLUEDataset(Dataset):
     def __init__(self, datasets: [huggingface_datasets.Dataset], split):
         self.sentences = []
         self.labels = []
+        self.classLabelIndices = {}
         totalLabels = 0
         for d_i in range(len(datasets)):
             if 'sentence1' in datasets[d_i][split][0].keys():
@@ -23,6 +27,12 @@ class GLUEDataset(Dataset):
                     self.sentences.append('[CLS] ' + sentence[i] + ' [SEP]')
                     self.labels.append(labels[i] + totalLabels)
             totalLabels += len(set(datasets[d_i][split]['label']))
+        for label_i in range(len(self.labels)):
+            if self.labels[label_i] not in self.classLabelIndices:
+                self.classLabelIndices[self.labels[label_i]] = []
+                self.classLabelIndices[self.labels[label_i]].append(label_i)
+            else:
+                self.classLabelIndices[self.labels[label_i]].append(label_i)
 
     def __len__(self):
         """Denotes the total number of samples"""
@@ -31,3 +41,25 @@ class GLUEDataset(Dataset):
     def __getitem__(self, index):
         """Generates one sample of data"""
         return self.sentences[index], self.labels[index]
+
+    def getClassLabelIndices(self):
+        return self.classLabelIndices
+
+    def getLabels(self):
+        return self.labels
+
+    def reMapLabels(self):
+        # step 1 - get a random permutation of the labels and re-write self.classLabelIndices
+        totalClasses = len(self.classLabelIndices.keys())
+        listOfClasses = [i for i in range(totalClasses)]
+        random.shuffle(listOfClasses)
+        class_i = 0
+        updatedDictOfLabelIndices = {}
+        for classLabel in self.classLabelIndices.keys():
+            updatedDictOfLabelIndices[listOfClasses[class_i]] = self.classLabelIndices[classLabel]
+            class_i += 1
+        self.classLabelIndices = updatedDictOfLabelIndices
+        # step 2 - update self.labels to reflect new values
+        for classLabel in self.classLabelIndices.keys():
+            for i in range(len(self.classLabelIndices[classLabel])):
+                self.labels[self.classLabelIndices[classLabel][i]] = classLabel

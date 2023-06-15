@@ -1,5 +1,5 @@
-from training_datasets.GLUEDataset import GLUEDataset
 import learn2learn as l2l
+from training_datasets.GLUEDataset import GLUEDataset
 
 
 class GLUEMetaDataset:

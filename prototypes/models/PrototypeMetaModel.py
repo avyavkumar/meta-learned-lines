@@ -51,11 +51,3 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
     #         self.output.weight = output_weight
     #         self.output.bias = output_bias
     #         self.isOutputLayerInitialised = True
-
-
-class Test:
-    def __init__(self, x):
-        self.x = x
-
-    def getX(self):
-        print(self.x)

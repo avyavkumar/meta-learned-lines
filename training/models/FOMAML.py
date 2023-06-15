@@ -1,11 +1,14 @@
 import torch
 import numpy as np
 import torch.nn as nn
+
+from learn2learn.algorithms import LightningMAML
 from learn2learn.utils.lightning import EpisodicBatcher
 from sklearn.metrics import accuracy_score
 from transformers import AdamW, get_constant_schedule_with_warmup
 from pathlib import Path
 
+import torch.nn.functional as F
 from datautils.GLUEEncoderUtils import get_labelled_GLUE_episodic_training_data
 from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
 from utils.Constants import FOMAML, HIDDEN_MODEL_SIZE, PROTOTYPE_META_MODEL
@@ -19,32 +22,43 @@ import matplotlib.pyplot as plt
 
 from datautils.LEOPARDEncoderUtils import read_test_data as read_test_data_bert
 from training_datasets.GLUEMetaDataset import GLUEMetaDataset
+import pytorch_lightning as L
 
 
 # TODO save the best model
 # TODO implement early stopping#
 # TODO check if the training is happening as expected - meta-layer is consistent across all layers
-class FOMAML:
+class FOMAML(L.LightningModule):
 
-    def __init__(self, params, labelKeys):
-        self.params = params
+    def __init__(self, outerLR, innerLR, outputLR, steps):
+        super().__init__()
+        self.save_hyperparameters()
         # self.printValidationPlot = params['printValidationPlot']
         # self.printValidationLoss = params['printValidationLoss']
-        self.labelKeys = labelKeys
         self.metaLearner = PrototypeMetaModel()
 
-    def trainPrototypes(self, dataset: GLUEMetaDataset, params):
+    def trainInnerLoop(self):
+        pass
+
+    def trainOuterLoop(self, batch):
+        pass
+
+    def computeLines(self, dataset: GLUEMetaDataset, params):
         """
-        construct a batch of episodes from consolidated GLUE data
-        get the saved model, strip the topmost layer and add a classification layer
-        construct prototypes and lines using these models
-        invoke the learn2learn library with Lightning on slurm/other device
-        compute the inner loop loss with it's own optimiser and hyperparameters
-        copy the model
-        compute the outer loop loss with different hyperparameters on the copied model
-        propagate the loss and update parameters of the original model
-        compute validation loss of the dataset
-        if validation loss is the lowest, save the outer loop updated model and discard the inner loop updated model
+        we have got the lines and the meta + linear model is attached at the ends of the line
+        write a loss function which works off cross entropy but splits the total loss into the fraction of distances
+          it is capable of calculating accuracy etc
+        we need to start training
+          get the hyperparameters and meta-hyperparameters
+              inner loop learning rate, outer loop learning rate, dropout, adaptation steps
+              learning rates are different for linear layer and meta-model - modify the code in lightning_maml
+          initialise two trainers
+          pick an episode and compute the loss using the custom loss function for both the networks
+          attach those losses to the trainers and ensure that
+              (a) linear layers are updated according to the loss fraction assigned to them
+              (b) meta-layers are updated twice (essentially boils down to cross entropy loss)
+          check on the validation set
+          save the best meta-model - check if there is a callback by default
         """
 
         # Set seeds for reproducibility
@@ -56,18 +70,6 @@ class FOMAML:
         for _ in range(params['batch_size']):
             episodes.append(dataset.getTask())
 
-        # construct learner models for all episodes based off the top level meta-learner
-        # learnerModels_1 = []
-        # learnerModels_2 = []
-        # for i in range(len(episodes)):
-        #     classes = len(set(episodes[i][1].tolist()))
-        #     learnerModels_1.append(nn.Sequential(
-        #         self.metaLearner,
-        #         nn.Linear(HIDDEN_MODEL_SIZE, classes)))
-        #     learnerModels_2.append(nn.Sequential(
-        #         self.metaLearner,
-        #         nn.Linear(HIDDEN_MODEL_SIZE, classes)))
-
         linesPerEpisode = []
         # get training encodings and centroids for all episodes
         for episode_i in range(len(episodes)):
@@ -77,7 +79,13 @@ class FOMAML:
             lineGenerator = LineGenerator(trainingSet, PROTOTYPE_META_MODEL)
             # store these lines in a list
             linesPerEpisode.append(lineGenerator.generateLines(self.metaLearner))
-            ### CHECK IF THE META MODEL IS THE SAME AND IF IT WILL GET UPDATED!
+
+        return linesPerEpisode
+
+    def training_step(self, batch, batch_idx):
+        self.trainOuterLoop(batch)
+
+
 
 
     #     encodings = training_set["encodings"]
