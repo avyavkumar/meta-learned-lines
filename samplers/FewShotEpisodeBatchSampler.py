@@ -1,5 +1,3 @@
-import torch
-
 from samplers.FewShotEpisodeSampler import FewShotEpisodeSampler
 from training_datasets.GLUEDataset import GLUEDataset
 
@@ -7,29 +5,32 @@ from training_datasets.GLUEDataset import GLUEDataset
 class FewShotEpisodeBatchSampler:
     def __init__(self, dataset: GLUEDataset, kShot, nWay, batchSize, shuffle=True):
         super().__init__()
+        self.nWay = nWay
+        self.kShot = kShot * 2
         self.sampler = FewShotEpisodeSampler(dataset, kShot, nWay, shuffle)
         self.batchSize = batchSize
 
     def __iter__(self):
         episodeBatch = []
-        for episode_i, episode in enumerate(self.sampler):
-            episodeBatch.extend(episode)
+        for episode_i in range(self.batchSize):
+            episodeBatch.extend(next(iter(self.sampler)))
             if (episode_i + 1) % self.batchSize == 0:
                 yield episodeBatch
-                episodeBatch = []
-
-    def __len__(self):
-        return len(self.sampler) // self.batchSize
 
     def getCollateFunction(self):
         def collate(dataset):
             idx = 0
             batchedData = []
             batchedLabels = []
-            while idx < self.batchSize:
-                data, labels = dataset[idx * self.batchSize: (idx + 1) * self.batchSize]
-                batchedData.append(list(data))
-                batchedLabels.append(list(labels))
-                idx += 1
-            return list(zip(batchedData, batchedLabels))
+            while idx < len(dataset):
+                data = []
+                labels = []
+                for i in range(self.nWay * self.kShot):
+                    dataPoint, label = dataset[idx + i]
+                    data.append(dataPoint)
+                    labels.append(label)
+                batchedData.append(data)
+                batchedLabels.append(labels)
+                idx += self.nWay * self.kShot
+            return batchedData, batchedLabels
         return collate
