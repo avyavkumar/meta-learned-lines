@@ -22,13 +22,13 @@ If there are two sentences (for example in an entailment task), concatenate the 
 """
 
 
-def get_labelled_GLUE_episodic_training_data(episode):
+def get_labelled_GLUE_episodic_training_data(data, labels):
     model = get_model()
     tokenizer = get_tokenizer()
     training_encodings = []
-    training_labels = episode[1]
+    training_labels = labels
     for i in range(len(training_labels)):
-        inputs = tokenizer(episode[0][i], return_tensors="pt")
+        inputs = tokenizer(data[i], return_tensors="pt")
         outputs = model(**inputs)
         encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
         training_encodings.append(encoding)

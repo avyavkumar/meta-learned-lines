@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import torch
 import numpy as np
 import torch.nn as nn
@@ -10,6 +12,7 @@ from pathlib import Path
 
 import torch.nn.functional as F
 from datautils.GLUEEncoderUtils import get_labelled_GLUE_episodic_training_data
+from lines.Line import Line
 from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
 from utils.Constants import FOMAML, HIDDEN_MODEL_SIZE, PROTOTYPE_META_MODEL
 
@@ -24,26 +27,64 @@ from datautils.LEOPARDEncoderUtils import read_test_data as read_test_data_bert
 from training_datasets.GLUEMetaDataset import GLUEMetaDataset
 import pytorch_lightning as L
 
+from utils.ModelUtils import get_prototypes
 
 # TODO save the best model
 # TODO implement early stopping#
 # TODO check if the training is happening as expected - meta-layer is consistent across all layers
 class FOMAML(L.LightningModule):
 
-    def __init__(self, outerLR, innerLR, outputLR, steps):
+    def __init__(self, outerLR, innerLR, outputLR, steps, batchSize):
         super().__init__()
         self.save_hyperparameters()
         # self.printValidationPlot = params['printValidationPlot']
         # self.printValidationLoss = params['printValidationLoss']
         self.metaLearner = PrototypeMetaModel()
 
-    def trainInnerLoop(self):
-        pass
+    def getOptimiser(self, model):
+        return -1
+
+    def getLearningRateScheduler(self, optimiser):
+        return -1
+
+    def trainInnerLoop(self, line: Line, supportSet, supportLabels):
+        # create models for inner loop updates
+        innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
+        innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
+        optimiser_1 = self.getOptimiser(innerLoopModel_1)
+        optimiser_2 = self.getOptimiser(innerLoopModel_2)
+        scheduler_1 = self.getLearningRateScheduler(optimiser_1)
+        scheduler_2 = self.getLearningRateScheduler(optimiser_2)
+
+        # calculate prototypes and use them to initialise the weights of the linear layer
+        prototypes, labels = get_prototypes(supportSet, supportLabels)
+        print(2 * prototypes)
+        # TODO the biases are very high!
+        innerLoopModel_1.setParamsOfLinearLayer(2 * prototypes, -torch.norm(prototypes, dim=1) ** 2)
+        innerLoopModel_2.setParamsOfLinearLayer(2 * prototypes, -torch.norm(prototypes, dim=1) ** 2)
 
     def trainOuterLoop(self, batch):
-        pass
+        accuracies = []
+        losses = []
+        for episode_i in range(len(batch[0])):
+            data, labels = batch[0][episode_i], batch[1][episode_i]
+            # split the data in support and query sets
+            supportSet, supportLabels = data[0:len(data) // 2], labels[0:len(data) // 2]
+            querySet, queryLabels = data[len(data) // 2:], labels[len(data) // 2:]
+            # compute lines for the support set
+            supportEncodings, lines = self.computeLines(supportSet, supportLabels)
+            # for each line, carry out meta-training
+            for idx, line in enumerate(lines):
+                # do not train if there is only one prototype
+                if len(set(line.getLabels())) == 1:
+                    continue
+                # perform few-shot adaptation on the support set
+                self.trainInnerLoop(line, supportEncodings, torch.Tensor(supportLabels))
+                # calculate the loss on the query set
 
-    def computeLines(self, dataset: GLUEMetaDataset, params):
+            print([line.getLabels() for line in lines])
+
+    def computeLines(self, supportSet, supportLabels):
         """
         we have got the lines and the meta + linear model is attached at the ends of the line
         write a loss function which works off cross entropy but splits the total loss into the fraction of distances
@@ -65,28 +106,15 @@ class FOMAML(L.LightningModule):
         # torch.manual_seed(42)
         # random.seed(42)
 
-        # sample episodes in the batch
-        episodes = []
-        for _ in range(params['batch_size']):
-            episodes.append(dataset.getTask())
-
-        linesPerEpisode = []
-        # get training encodings and centroids for all episodes
-        for episode_i in range(len(episodes)):
-            trainingEncodings, trainingLabels = get_labelled_GLUE_episodic_training_data(episodes[episode_i])
-            # invoke line generator and compute lines per episode
-            trainingSet = {'encodings': trainingEncodings, 'labels': trainingLabels}
-            lineGenerator = LineGenerator(trainingSet, PROTOTYPE_META_MODEL)
-            # store these lines in a list
-            linesPerEpisode.append(lineGenerator.generateLines(self.metaLearner))
-
-        return linesPerEpisode
+        trainingEncodings, trainingLabels = get_labelled_GLUE_episodic_training_data(supportSet, supportLabels)
+        # invoke line generator and compute lines per episode
+        trainingSet = {'encodings': trainingEncodings, 'labels': trainingLabels}
+        lineGenerator = LineGenerator(trainingSet, PROTOTYPE_META_MODEL)
+        lines = lineGenerator.generateLines(self.metaLearner)
+        return trainingEncodings, lines
 
     def training_step(self, batch, batch_idx):
         self.trainOuterLoop(batch)
-
-
-
 
     #     encodings = training_set["encodings"]
     #     training_labels = training_set["labels"]

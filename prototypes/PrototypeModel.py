@@ -7,3 +7,6 @@ class PrototypeModel:
 
     def scaleGradients(self, scalingFactor):
         pass
+
+    def setParamsOfLinearLayer(self, weights, bias):
+        pass

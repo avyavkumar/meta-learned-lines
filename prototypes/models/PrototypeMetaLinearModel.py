@@ -30,3 +30,9 @@ class PrototypeMetaLinearModel(nn.Module, PrototypeModel):
         # print(self.metaLearner.hidden.bias.data)
         self.linear.weight.grad = self.linear.weight.grad * scalingFactor
         self.linear.bias.grad = self.linear.bias.grad * scalingFactor
+
+    def setParamsOfLinearLayer(self, weights, bias):
+        self.linear.weight.data = weights
+        self.linear.bias.data = bias
+        print(self.linear.weight.data)
+        print(self.linear.bias.data)
