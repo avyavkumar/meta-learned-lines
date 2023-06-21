@@ -2,6 +2,7 @@ import torch
 
 
 def get_prototypes(inputs, labels):
+    labels = torch.tensor(labels, dtype=torch.int8)
     unique_labels, _ = torch.unique(labels).sort()
     prototypes = []
     for label in unique_labels:

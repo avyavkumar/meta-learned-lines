@@ -10,3 +10,6 @@ class PrototypeModel:
 
     def setParamsOfLinearLayer(self, weights, bias):
         pass
+
+    def getPrototypicalEmbedding(self, inputs):
+        pass
