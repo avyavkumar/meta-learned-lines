@@ -178,11 +178,9 @@ class FOMAML(L.LightningModule):
 
     def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels):
         # create models for inner loop updates
-        # innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
-        # innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
-        innerLoopModel_1 = line.getFirstPrototype().getPrototypeModel()
-        innerLoopModel_2 = line.getSecondPrototype().getPrototypeModel()
-
+        innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
+        innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
+        
         # filter support encodings and labels to ensure that only line-specific data is used for training
         filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), supportSet,
                                                                                            supportLabels)
@@ -234,6 +232,7 @@ class FOMAML(L.LightningModule):
                 # perform few-shot adaptation on the support set
                 self.trainInnerLoop(line, supportSet, supportEncodings, supportLabels)
                 # calculate the loss on the query set
+
 
     def computeLines(self, supportSet, supportLabels):
         """
