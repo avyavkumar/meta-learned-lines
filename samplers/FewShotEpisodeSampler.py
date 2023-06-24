@@ -8,8 +8,8 @@ class FewShotEpisodeSampler:
         self.dataset = dataset
         # use twice the number of k shots for support and query set
         self.kShot = kShot * 2
-        # IMPORTANT nWay should only be equal to all the number of classes, not just a subset#
-        # torch accepts a list of indices from the main dataset#
+        # IMPORTANT nWay should only be equal to all the number of classes, not just a subset
+        # torch accepts a list of indices from the main dataset
         # therefore, we cannot remap non-zero indexed data points as this would require a change across the dataset
         # TODO check if the trainer has the code to remap labels
         self.nWay = nWay

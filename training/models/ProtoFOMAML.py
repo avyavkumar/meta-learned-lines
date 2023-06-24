@@ -1,34 +1,17 @@
 from copy import deepcopy
-
 import torch
 import numpy as np
 import torch.nn as nn
-
-from learn2learn.algorithms import LightningMAML
-from learn2learn.utils.lightning import EpisodicBatcher
-from sklearn.metrics import accuracy_score
 from torch.optim import SGD
 from transformers import AdamW, get_constant_schedule_with_warmup
-from pathlib import Path
-
-import torch.nn.functional as F
 from datautils.GLUEEncoderUtils import get_labelled_GLUE_episodic_training_data
 from lines.Line import Line
 from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
 from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
-from utils.Constants import FOMAML, HIDDEN_MODEL_SIZE, PROTOTYPE_META_MODEL
-
-from datautils.GLUEDataUtils import get_random_GLUE_dataset
+from utils.Constants import PROTOTYPE_META_MODEL
 from lines.LineGenerator import LineGenerator
-from training_datasets.EncodingDataset import EncodingDataset
-from torch.utils.data import DataLoader, TensorDataset
-
-import matplotlib.pyplot as plt
-
-from datautils.LEOPARDEncoderUtils import read_test_data as read_test_data_bert
-from training_datasets.GLUEMetaDataset import GLUEMetaDataset
+from torch.utils.data import DataLoader
 import pytorch_lightning as L
-
 from utils.ModelUtils import get_prototypes
 
 
@@ -40,8 +23,6 @@ class ProtoFOMAML(L.LightningModule):
     def __init__(self, outerLR, innerLR, outputLR, steps, batchSize, warmupSteps):
         super().__init__()
         self.save_hyperparameters()
-        # self.printValidationPlot = params['printValidationPlot']
-        # self.printValidationLoss = params['printValidationLoss']
         self.metaLearner = PrototypeMetaModel()
 
     def filterEncodingsByLabels(self, labels, training_data, training_labels):
@@ -285,12 +266,6 @@ class ProtoFOMAML(L.LightningModule):
                     metaParam_1.grad += localParam_1.grad
                     metaParam_2.grad += localParam_2.grad
 
-            for metaParam_1, metaParam_2 in zip(
-                    line.getFirstPrototype().getPrototypeModel().metaLearner.parameters(),
-                    line.getSecondPrototype().getPrototypeModel().metaLearner.parameters()):
-                if metaParam_1.requires_grad:
-                    print(metaParam_1.grad)
-
             model_1.zero_grad()
             model_2.zero_grad()
 
@@ -334,27 +309,6 @@ class ProtoFOMAML(L.LightningModule):
                 self.trainOuterLoop(queryLine, innerModel_1, innerModel_2, querySet, queryEncodings, queryLabels)
 
     def computeLines(self, dataset, labels):
-        """
-        we have got the lines and the meta + linear model is attached at the ends of the line
-        write a loss function which works off cross entropy but splits the total loss into the fraction of distances
-          it is capable of calculating accuracy etc
-        we need to start training
-          get the hyperparameters and meta-hyperparameters
-              inner loop learning rate, outer loop learning rate, dropout, adaptation steps
-              learning rates are different for linear layer and meta-model - modify the code in lightning_maml
-          initialise two trainers
-          pick an episode and compute the loss using the custom loss function for both the networks
-          attach those losses to the trainers and ensure that
-              (a) linear layers are updated according to the loss fraction assigned to them
-              (b) meta-layers are updated twice (essentially boils down to cross entropy loss)
-          check on the validation set
-          save the best meta-model - check if there is a callback by default
-        """
-
-        # Set seeds for reproducibility
-        # torch.manual_seed(42)
-        # random.seed(42)
-
         trainingEncodings, trainingLabels = get_labelled_GLUE_episodic_training_data(dataset, labels)
         # invoke line generator and compute lines per episode
         trainingSet = {'encodings': trainingEncodings, 'labels': trainingLabels}
@@ -362,5 +316,17 @@ class ProtoFOMAML(L.LightningModule):
         lines = lineGenerator.generateLines(self.metaLearner)
         return trainingEncodings, lines
 
+    def validation_step(self):
+        # get the dataset and create a few shot episode
+        # perform inner loop training on this model
+        # evaluate on the query set
+        # log the validation loss and validation accuracy
+        pass
+
     def training_step(self, batch, batch_idx):
+
+        # Set seeds for reproducibility
+        # torch.manual_seed(42)
+        # random.seed(42)
+
         self.metaTrain(batch)
