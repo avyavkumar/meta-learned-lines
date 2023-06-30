@@ -11,3 +11,6 @@ class Prototype:
 
     def getPrototypeModel(self):
         return self.prototypeModel
+
+    def setPrototypeModel(self, prototypeModel):
+        self.prototypeModel = prototypeModel

@@ -14,6 +14,7 @@ class LineGenerator:
     def generateLines(self, metaLearner=None):
         training_encodings = self.trainingSet['encodings']
         training_labels = self.trainingSet['labels']
+        total_classes = len(set(training_labels.tolist()))
 
         centroids, centroid_labels = get_labelled_centroids(training_encodings, training_labels.tolist())
         k = len(centroid_labels)
@@ -28,6 +29,7 @@ class LineGenerator:
             for j in lines_generated[i]:
                 centroids_required.append(centroids[j])
                 centroid_labels_required.append(centroid_labels[j])
-            lines.append(Line(centroids_required, np.array(centroid_labels_required), self.modelType, metaLearner=metaLearner))
+            lines.append(Line(total_classes, centroids_required, np.array(centroid_labels_required), self.modelType,
+                              metaLearner=metaLearner))
 
         return lines

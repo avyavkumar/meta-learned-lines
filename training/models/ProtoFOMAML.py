@@ -1,3 +1,4 @@
+import copy
 from copy import deepcopy
 import torch
 import numpy as np
@@ -6,6 +7,7 @@ from torch.optim import SGD
 from transformers import AdamW, get_constant_schedule_with_warmup
 from datautils.GLUEEncoderUtils import get_labelled_GLUE_episodic_training_data
 from lines.Line import Line
+from lines.lo_shot_utils import dist_to_line_multiD
 from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
 from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
 from utils.Constants import PROTOTYPE_META_MODEL
@@ -15,8 +17,7 @@ import pytorch_lightning as L
 from utils.ModelUtils import get_prototypes
 
 
-# TODO check if the training is happening as expected - meta-layer is consistent across all layers
-# TODO check if outer loop and inner loop works as expected - meta learning is according to accumulating grad in episodes
+# TODO rewrite the meta train logic - no need to compute lines for the query set; test directly on points
 # TODO write the validation loop logic
 class ProtoFOMAML(L.LightningModule):
 
@@ -114,8 +115,7 @@ class ProtoFOMAML(L.LightningModule):
             'batch_size': self.hparams.batchSize
         }
 
-        trainingDataset = SentenceEncodingDataset(filteredTrainingSentences, filteredTrainingEncodings,
-                                                  filteredTrainingLabels)
+        trainingDataset = SentenceEncodingDataset(filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels)
         trainLoader = torch.utils.data.DataLoader(trainingDataset, **trainingParams)
 
         criterion = self.getCriterion()
@@ -165,16 +165,16 @@ class ProtoFOMAML(L.LightningModule):
         assert torch.all(torch.eq(torch.tensor(filteredTrainingLabels_1, dtype=torch.int8),
                                   torch.tensor(filteredTrainingLabels_2, dtype=torch.int8))) == torch.tensor(True)
 
-        filteredTrainingLabels = [line.getLabelDict()[label] for label in filteredTrainingLabels_1]
+        # filteredTrainingLabels = [line.getLabelDict()[label] for label in filteredTrainingLabels_1]
 
-        prototypicalEmbeddings_1 = innerLoopModel_1.getPrototypicalEmbedding(filteredTrainingSentences)
-        prototypicalEmbeddings_2 = innerLoopModel_2.getPrototypicalEmbedding(filteredTrainingSentences)
+        prototypicalEmbeddings_1 = innerLoopModel_1.getPrototypicalEmbedding(supportSet)
+        prototypicalEmbeddings_2 = innerLoopModel_2.getPrototypicalEmbedding(supportSet)
 
         # sanity check to ensure that both models are initialised the same way
         assert torch.equal(prototypicalEmbeddings_1, prototypicalEmbeddings_2)
 
         # calculate prototypes and use them to initialise the weights of the linear layer
-        prototypes, _ = get_prototypes(prototypicalEmbeddings_1, filteredTrainingLabels)
+        prototypes, _ = get_prototypes(prototypicalEmbeddings_1, supportLabels)
 
         # TODO the biases are very high!
         innerLoopModel_1.setParamsOfLinearLayer(2 * prototypes, -torch.norm(prototypes, dim=1) ** 2)
@@ -183,78 +183,64 @@ class ProtoFOMAML(L.LightningModule):
         # use SGD to carry out few-shot adaptation
         for _ in range(self.hparams.steps):
             self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, filteredTrainingSentences,
-                                          filteredTrainingEncodings, filteredTrainingLabels)
+                                          filteredTrainingEncodings, filteredTrainingLabels_2)
 
-        return innerLoopModel_1, innerLoopModel_2
+        line.getFirstPrototype().setPrototypeModel(innerLoopModel_1)
+        line.getSecondPrototype().setPrototypeModel(innerLoopModel_2)
 
-    def runOuterLoop(self, line, model_1, model_2, querySet, queryEncodings, queryLabels, train=True):
-
-        # filter support encodings and labels to ensure that only line-specific data is used for training
-        filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), querySet,
-                                                                                           queryLabels)
-        filteredTrainingEncodings, filteredTrainingLabels_2 = self.filterEncodingsByLabels(line.getLabels(),
-                                                                                           queryEncodings,
-                                                                                           queryLabels)
-
-        # sanity check to ensure that the filtered data is in the correct order
-        assert torch.all(torch.eq(torch.tensor(filteredTrainingLabels_1, dtype=torch.int8),
-                                  torch.tensor(filteredTrainingLabels_2, dtype=torch.int8))) == torch.tensor(True)
-
-        filteredTrainingLabels = [line.getLabelDict()[label] for label in filteredTrainingLabels_1]
-
-        # run the model and get the outputs from the query set
-        # TODO instantiate the training params
-        trainingParams = {
-            'batch_size': self.hparams.batchSize
-        }
-
-        trainingDataset = SentenceEncodingDataset(filteredTrainingSentences, filteredTrainingEncodings,
-                                                  filteredTrainingLabels)
-        trainLoader = torch.utils.data.DataLoader(trainingDataset, **trainingParams)
-        criterion = self.getCriterion()
-
-        for i, data in enumerate(trainLoader, 0):
-
-            # get the inputs; data is a list of [inputs, encodings, labels]
-            inputs, encodings, labels = data
-
-            outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
-                                                                               line.getFirstPrototype().getLocation(),
-                                                                               line.getSecondPrototype().getLocation())
-
-            # compute the loss
-            losses = criterion(outputs, labels)
-            print("outer loop losses are", losses, "and loss is", losses.sum().item())
-
-            if train:
-                # calculate the gradients
-                losses.sum().backward()
-
-                # multiply the calculated gradients of each model by a scaling factor
-                self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
-                printed = False
-                # in first order approximation, the gradients are the sum of the inner and outer loop models
-                for metaParam, localParam_1, localParam_2 in zip(self.metaLearner.parameters(),
-                                                                 model_1.metaLearner.parameters(),
-                                                                 model_2.metaLearner.parameters()):
-                    if metaParam.requires_grad:
-                        if metaParam.grad is None:
-                            metaParam.grad = torch.zeros(localParam_1.grad.shape)
-                        metaParam.grad += localParam_1.grad
-                        metaParam.grad += localParam_2.grad
-                        if not printed:
-                            print("local param grad is", localParam_1.grad)
-                            print("local param grad is", localParam_2.grad)
-                            print("meta param grad is", metaParam.grad)
-                            printed = True
-
-                model_1.zero_grad()
-                model_2.zero_grad()
-            else:
-                with torch.no_grad():
-                    model_1.eval()
-                    model_2.eval()
-                    # write code for validation
+    def runOuterLoop(self, supportLines, querySentences, queryEncodings, queryLabels, train=True):
+        assignments = []
+        for point in queryEncodings:
+            dists = [
+                dist_to_line_multiD(point.detach().numpy(), line.getFirstPrototype().getLocation().detach().numpy(),
+                                    line.getSecondPrototype().getLocation().detach().numpy()) for line in supportLines]
+            nearest = np.argmin(dists)
+            assignments.append(nearest)
+        for i in range(len(supportLines)):
+            requiredQueryEncodings = np.array([queryEncodings[x].detach().numpy() for x in range((len(assignments))) if assignments[x] == i])
+            requiredQuerySentences = [querySentences[x] for x in range((len(assignments))) if assignments[x] == i]
+            requiredQueryEncodings = torch.from_numpy(requiredQueryEncodings)
+            if requiredQueryEncodings.shape[0] > 0:
+                requiredQueryLabels = [int(queryLabels[x].item()) for x in range((len(assignments))) if assignments[x] == i]
+                trainingParams = {
+                    'batch_size': self.hparams.batchSize
+                }
+                trainingDataset = SentenceEncodingDataset(requiredQuerySentences, requiredQueryEncodings, requiredQueryLabels)
+                trainLoader = torch.utils.data.DataLoader(trainingDataset, **trainingParams)
+                criterion = self.getCriterion()
+                model_1 = supportLines[i].getFirstPrototype().getPrototypeModel()
+                model_2 = supportLines[i].getSecondPrototype().getPrototypeModel()
+                for j, data in enumerate(trainLoader, 0):
+                    # get the inputs; data is a list of [inputs, encodings, labels]
+                    inputs, encodings, labels = data
+                    outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
+                                                                                       supportLines[i].getFirstPrototype().getLocation(),
+                                                                                       supportLines[i].getSecondPrototype().getLocation())
+                    # compute the loss
+                    losses = criterion(outputs, labels)
+                    print("outer loop losses are", losses, "and loss is", losses.sum().item())
+                    if train:
+                        # calculate the gradients
+                        losses.sum().backward()
+                        # multiply the calculated gradients of each model by a scaling factor
+                        self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
+                        printed = False
+                        # in first order approximation, the gradients are the sum of the inner and outer loop models
+                        for metaParam, localParam_1, localParam_2 in zip(self.metaLearner.parameters(),
+                                                                         model_1.metaLearner.parameters(),
+                                                                         model_2.metaLearner.parameters()):
+                            if metaParam.requires_grad:
+                                if metaParam.grad is None:
+                                    metaParam.grad = torch.zeros(localParam_1.grad.shape)
+                                metaParam.grad += localParam_1.grad
+                                metaParam.grad += localParam_2.grad
+                                if not printed:
+                                    print("local param grad is", localParam_1.grad)
+                                    print("local param grad is", localParam_2.grad)
+                                    print("meta param grad is", metaParam.grad)
+                                    printed = True
+                        model_1.zero_grad()
+                        model_2.zero_grad()
 
     def compareLines(self, lines_1, lines_2):
         for line_1, line_2 in zip(lines_1, lines_2):
@@ -262,7 +248,7 @@ class ProtoFOMAML(L.LightningModule):
                 return False
         return True
 
-    def metaTrain(self, batch, train=True):
+    def metaTrain(self, batch):
         accuracies = []
         losses = []
 
@@ -276,31 +262,22 @@ class ProtoFOMAML(L.LightningModule):
             querySet, queryLabels = data[len(data) // 2:], labels[len(data) // 2:]
             # compute lines for the support set
             supportEncodings, supportLines = self.computeLines(supportSet, supportLabels)
-            queryEncodings, queryLines = self.computeLines(querySet, queryLabels)
-            # lines will change on query set, therefore we need to calculate them again
-            # for ProtoFOMAML, since the output layer depends on the support set
-            # we need to ensure that the two sets of lines are the same
-            # if they are not the same, we skip this episode and carry on training
-            # however, it is ok to continue in validation
-            if train and not self.compareLines(supportLines, queryLines):
-                continue
-            # for each line, carry out meta-training
-            for idx, (supportLine, queryLine) in enumerate(zip(supportLines, queryLines)):
+            queryEncodings, queryLabels = get_labelled_GLUE_episodic_training_data(querySet, queryLabels)
+            # for each line in the support set, carry out meta-training
+            for supportLine in supportLines:
                 # do not train if there is only one prototype
-                if len(set(supportLine.getLabels())) == 1:
-                    continue
+                # if len(set(supportLine.getLabels())) == 1:
+                #     continue
                 # perform few-shot adaptation on the support set
-                innerModel_1, innerModel_2 = self.trainInnerLoop(supportLine, supportSet, supportEncodings,
-                                                                 supportLabels)
-                # calculate the loss on the query set
-                self.runOuterLoop(queryLine, innerModel_1, innerModel_2, querySet, queryEncodings, queryLabels)
+                self.trainInnerLoop(supportLine, supportSet, supportEncodings, supportLabels)
+            # calculate the loss on the query set
+            self.runOuterLoop(supportLines, querySet, queryEncodings, queryLabels, train=True)
 
-        if train:
-            # update the gradients after accumulating them
-            optimiser = self.getMetaLearningOptimiser(self.metaLearner)
-            scheduler = self.getLearningRateScheduler(optimiser)
-            optimiser.step()
-            scheduler.step()
+        # update the gradients after accumulating them
+        optimiser = self.getMetaLearningOptimiser(self.metaLearner)
+        scheduler = self.getLearningRateScheduler(optimiser)
+        optimiser.step()
+        scheduler.step()
 
     def computeLines(self, dataset, labels):
         trainingEncodings, trainingLabels = get_labelled_GLUE_episodic_training_data(dataset, labels)
@@ -315,10 +292,10 @@ class ProtoFOMAML(L.LightningModule):
         # perform inner loop training on this model
         # evaluate on the query set
         # log the validation loss and validation accuracy
-        self.metaTrain(batch, train=False)
+        self.validate(batch)
 
     def training_step(self, batch, batch_idx):
         # Set seeds for reproducibility
         # torch.manual_seed(42)
         # random.seed(42)
-        self.metaTrain(batch, train=True)
+        self.metaTrain(batch)

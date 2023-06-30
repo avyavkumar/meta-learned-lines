@@ -8,34 +8,34 @@ from utils.Constants import BERT_DIMS, PROTOTYPE_META_MODEL, HIDDEN_MODEL_SIZE
 
 
 class Line:
-    def __init__(self, centroids, labels, modelType: str, metaLearner=None, labelDict=None):
+    def __init__(self, totalClasses, centroids, labels, modelType: str, metaLearner=None, labelDict=None):
+        self.totalClasses = totalClasses
         self.centroids = centroids
         self.labels = labels
         self.firstPrototype = None
         self.secondPrototype = None
         self.modelType = modelType
         self.openPrototypes(modelType, metaLearner)
-        self.labelDict = self.createLabelDict(labels, labelDict)
+        # self.labelDict = self.createLabelDict(labels, labelDict)
 
-    def createLabelDict(self, labels, labelDict):
-        if labelDict is not None:
-            return labelDict
-        lineLabelIndices = {}
-        for i in range(len(labels)):
-            lineLabelIndices[labels[i]] = i
-        return lineLabelIndices
+    # def createLabelDict(self, labels, labelDict):
+    #     if labelDict is not None:
+    #         return labelDict
+    #     lineLabelIndices = {}
+    #     for i in range(len(labels)):
+    #         lineLabelIndices[labels[i]] = i
+    #     return lineLabelIndices
 
     def openPrototypes(self, modelType, metaLearner=None):
-        classes = len(self.centroids)
         if modelType == CLASSIFIER_MODEL_4NN:
-            self.firstPrototype = Prototype(self.centroids[0], PrototypeClassifierModel4NN(BERT_DIMS, classes))
-            self.secondPrototype = Prototype(self.centroids[-1], PrototypeClassifierModel4NN(BERT_DIMS, classes))
+            self.firstPrototype = Prototype(self.centroids[0], PrototypeClassifierModel4NN(BERT_DIMS, self.totalClasses))
+            self.secondPrototype = Prototype(self.centroids[-1], PrototypeClassifierModel4NN(BERT_DIMS, self.totalClasses))
         elif modelType == CLASSIFIER_MODEL_2NN:
-            self.firstPrototype = Prototype(self.centroids[0], PrototypeClassifierModel2NN(BERT_DIMS, classes))
-            self.secondPrototype = Prototype(self.centroids[-1], PrototypeClassifierModel2NN(BERT_DIMS, classes))
+            self.firstPrototype = Prototype(self.centroids[0], PrototypeClassifierModel2NN(BERT_DIMS, self.totalClasses))
+            self.secondPrototype = Prototype(self.centroids[-1], PrototypeClassifierModel2NN(BERT_DIMS, self.totalClasses))
         elif modelType == PROTOTYPE_META_MODEL:
-            self.firstPrototype = Prototype(self.centroids[0], PrototypeMetaLinearModel(metaLearner, classes))
-            self.secondPrototype = Prototype(self.centroids[-1], PrototypeMetaLinearModel(metaLearner, classes))
+            self.firstPrototype = Prototype(self.centroids[0], PrototypeMetaLinearModel(metaLearner, self.totalClasses))
+            self.secondPrototype = Prototype(self.centroids[-1], PrototypeMetaLinearModel(metaLearner, self.totalClasses))
         else:
             raise ValueError("Unknown encoder type", modelType, "for creating a soft-label prototype")
 
@@ -54,5 +54,5 @@ class Line:
     def getSecondPrototype(self) -> Prototype:
         return self.secondPrototype
 
-    def getLabelDict(self):
-        return self.labelDict
+    # def getLabelDict(self):
+    #     return self.labelDict
