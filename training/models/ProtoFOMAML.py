@@ -1,8 +1,8 @@
-import copy
 from copy import deepcopy
 import torch
 import numpy as np
 import torch.nn as nn
+from sklearn.metrics import accuracy_score
 from torch.optim import SGD
 from transformers import AdamW, get_constant_schedule_with_warmup
 from datautils.GLUEEncoderUtils import get_labelled_GLUE_episodic_training_data
@@ -17,7 +17,7 @@ import pytorch_lightning as L
 from utils.ModelUtils import get_prototypes
 
 
-# TODO rewrite the meta train logic - no need to compute lines for the query set; test directly on points
+# TODO check if prototypes are evaluated correctly
 # TODO write the validation loop logic
 class ProtoFOMAML(L.LightningModule):
 
@@ -35,26 +35,13 @@ class ProtoFOMAML(L.LightningModule):
                 filteredTrainingLabels.append(training_labels[i])
         return torch.Tensor(np.array(filteredTrainingData)), np.array(filteredTrainingLabels)
 
-    def getPredictions(self, outputs, line):
-        predictedLabels = []
-        argmaxLabels = torch.argmax(outputs, dim=1).tolist()
-        reverseLookup = {}
-        for key, value in line.getLabelDict().items():
-            reverseLookup[value] = key
-        for i in range(len(argmaxLabels)):
-            predictedLabels.append(reverseLookup[argmaxLabels[i]])
-        return predictedLabels
-
     def updateGradients(self, losses, model_1, model_2, distances_1, distances_2):
         losses_1 = losses.clone().detach()
         losses_2 = losses.clone().detach()
-
         losses_1 = distances_2.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_1
         losses_2 = distances_1.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_2
-
         loss_ratio_1 = (losses_1.sum() / (losses_1.sum() + losses_2.sum()))
         loss_ratio_2 = (losses_2.sum() / (losses_1.sum() + losses_2.sum()))
-
         model_1.scaleGradients(loss_ratio_1)
         model_2.scaleGradients(loss_ratio_2)
 
@@ -78,23 +65,18 @@ class ProtoFOMAML(L.LightningModule):
         return get_constant_schedule_with_warmup(optimiser, num_warmup_steps=self.hparams.warmupSteps)
 
     def computeLabelsAndDistances(self, inputs, encodings, model_1, model_2, location_1, location_2):
-
         output_1 = model_1(inputs)
         output_2 = model_2(inputs)
-
         # get distances from the prototypes for all inputs
         distances_1 = []
         distances_2 = []
         for i in range(encodings.shape[0]):
             distances_1.append(np.linalg.norm(encodings[i].detach().numpy() - location_1.detach().numpy()))
             distances_2.append(np.linalg.norm(encodings[i].detach().numpy() - location_2.detach().numpy()))
-
         distances_1 = torch.unsqueeze(torch.Tensor(np.array(distances_1)), 1)
         distances_2 = torch.unsqueeze(torch.Tensor(np.array(distances_2)), 1)
-
         # compute the weighted probability distribution
         outputs = output_1 / distances_1 + output_2 / distances_2
-
         # return the final weighted probability distribution
         return outputs, distances_1, distances_2
 
@@ -108,38 +90,35 @@ class ProtoFOMAML(L.LightningModule):
         return filteredTrainingSentences, np.array(filteredTrainingLabels)
 
     def runInnerLoopTrainingStep(self, line, model_1, model_2, filteredTrainingSentences, filteredTrainingEncodings,
-                                 filteredTrainingLabels):
-
-        # TODO instantiate the training params
+                                 filteredTrainingLabels, train=True):
         trainingParams = {
             'batch_size': self.hparams.batchSize
         }
-
         trainingDataset = SentenceEncodingDataset(filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels)
         trainLoader = torch.utils.data.DataLoader(trainingDataset, **trainingParams)
-
+        predictions = []
+        correctLabels = []
         criterion = self.getCriterion()
         optimiser_1 = self.getInnerLoopOptimiser(model_1)
         optimiser_2 = self.getInnerLoopOptimiser(model_2)
         optimiser_1.zero_grad()
         optimiser_2.zero_grad()
-
         training_losses = []
         for i, data in enumerate(trainLoader, 0):
             # get the inputs; data is a list of [inputs, encodings, labels]
             inputs, encodings, labels = data
-
             outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
                                                                                line.getFirstPrototype().getLocation(),
                                                                                line.getSecondPrototype().getLocation())
-
             # compute the loss
             losses = criterion(outputs, labels)
+            predictions_i = torch.argmax(outputs, dim=1).tolist()
+            predictions.extend(predictions_i)
+            correctLabels.extend(labels)
             print("losses are", losses, "and loss is", losses.sum().item())
             # calculate the gradients
             losses.sum().backward()
             training_losses.append(losses.sum().item())
-
             # multiply the calculated gradients of each model by a scaling factor
             self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
             # update the gradients
@@ -148,48 +127,45 @@ class ProtoFOMAML(L.LightningModule):
             # zero the parameter gradients
             optimiser_1.zero_grad()
             optimiser_2.zero_grad()
+        if train:
+            self.log("inner_loop_training_loss", sum(training_losses))
+            self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions))
 
-    def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels):
+    def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels, train=True):
         # create models for inner loop updates
         innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
         innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
-
         # filter support encodings and labels to ensure that only line-specific data is used for training
         filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), supportSet,
                                                                                            supportLabels)
         filteredTrainingEncodings, filteredTrainingLabels_2 = self.filterEncodingsByLabels(line.getLabels(),
                                                                                            supportEncodings,
                                                                                            supportLabels)
-
         # sanity check to ensure that the filtered data is in the correct order
         assert torch.all(torch.eq(torch.tensor(filteredTrainingLabels_1, dtype=torch.int8),
                                   torch.tensor(filteredTrainingLabels_2, dtype=torch.int8))) == torch.tensor(True)
-
         # filteredTrainingLabels = [line.getLabelDict()[label] for label in filteredTrainingLabels_1]
-
         prototypicalEmbeddings_1 = innerLoopModel_1.getPrototypicalEmbedding(supportSet)
         prototypicalEmbeddings_2 = innerLoopModel_2.getPrototypicalEmbedding(supportSet)
-
         # sanity check to ensure that both models are initialised the same way
         assert torch.equal(prototypicalEmbeddings_1, prototypicalEmbeddings_2)
-
         # calculate prototypes and use them to initialise the weights of the linear layer
         prototypes, _ = get_prototypes(prototypicalEmbeddings_1, supportLabels)
-
         # TODO the biases are very high!
         innerLoopModel_1.setParamsOfLinearLayer(2 * prototypes, -torch.norm(prototypes, dim=1) ** 2)
         innerLoopModel_2.setParamsOfLinearLayer(2 * prototypes, -torch.norm(prototypes, dim=1) ** 2)
-
         # use SGD to carry out few-shot adaptation
         for _ in range(self.hparams.steps):
             self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, filteredTrainingSentences,
-                                          filteredTrainingEncodings, filteredTrainingLabels_2)
-
+                                          filteredTrainingEncodings, filteredTrainingLabels_2, train)
         line.getFirstPrototype().setPrototypeModel(innerLoopModel_1)
         line.getSecondPrototype().setPrototypeModel(innerLoopModel_2)
 
     def runOuterLoop(self, supportLines, querySentences, queryEncodings, queryLabels, train=True):
         assignments = []
+        predictions = []
+        actualLabels = []
+        losses = []
         for point in queryEncodings:
             dists = [
                 dist_to_line_multiD(point.detach().numpy(), line.getFirstPrototype().getLocation().detach().numpy(),
@@ -217,13 +193,17 @@ class ProtoFOMAML(L.LightningModule):
                                                                                        supportLines[i].getFirstPrototype().getLocation(),
                                                                                        supportLines[i].getSecondPrototype().getLocation())
                     # compute the loss
-                    losses = criterion(outputs, labels)
-                    print("outer loop losses are", losses, "and loss is", losses.sum().item())
+                    losses_j = criterion(outputs, labels)
+                    predictions_i = torch.argmax(outputs, dim=1).tolist()
+                    predictions.extend(predictions_i)
+                    actualLabels.extend(labels)
+                    losses.extend(losses_j)
                     if train:
+                        print("outer loop losses are", losses, "and loss is", losses_j.sum().item())
                         # calculate the gradients
-                        losses.sum().backward()
+                        losses_j.sum().backward()
                         # multiply the calculated gradients of each model by a scaling factor
-                        self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
+                        self.updateGradients(losses_j, model_1, model_2, distances_1, distances_2)
                         printed = False
                         # in first order approximation, the gradients are the sum of the inner and outer loop models
                         for metaParam, localParam_1, localParam_2 in zip(self.metaLearner.parameters(),
@@ -241,6 +221,13 @@ class ProtoFOMAML(L.LightningModule):
                                     printed = True
                         model_1.zero_grad()
                         model_2.zero_grad()
+        if train:
+            self.log("outer_loop_training_accuracy", accuracy_score(actualLabels, predictions))
+            print(accuracy_score(actualLabels, predictions))
+            self.log("outer_loop_training_loss", sum(losses))
+        else:
+            self.log("outer_loop_validation_accuracy", accuracy_score(actualLabels, predictions))
+            self.log("outer_loop_validation_loss", sum(losses))
 
     def compareLines(self, lines_1, lines_2):
         for line_1, line_2 in zip(lines_1, lines_2):
@@ -248,13 +235,11 @@ class ProtoFOMAML(L.LightningModule):
                 return False
         return True
 
-    def metaTrain(self, batch):
+    def runMetaWorkflow(self, batch, train=True):
         accuracies = []
         losses = []
-
         # zero the meta learning gradients
         self.metaLearner.zero_grad()
-
         for episode_i in range(len(batch[0])):
             data, labels = batch[0][episode_i], batch[1][episode_i]
             # split the data in support and query sets
@@ -269,10 +254,9 @@ class ProtoFOMAML(L.LightningModule):
                 # if len(set(supportLine.getLabels())) == 1:
                 #     continue
                 # perform few-shot adaptation on the support set
-                self.trainInnerLoop(supportLine, supportSet, supportEncodings, supportLabels)
+                self.trainInnerLoop(supportLine, supportSet, supportEncodings, supportLabels, train)
             # calculate the loss on the query set
-            self.runOuterLoop(supportLines, querySet, queryEncodings, queryLabels, train=True)
-
+            self.runOuterLoop(supportLines, querySet, queryEncodings, queryLabels, train)
         # update the gradients after accumulating them
         optimiser = self.getMetaLearningOptimiser(self.metaLearner)
         scheduler = self.getLearningRateScheduler(optimiser)
@@ -292,10 +276,10 @@ class ProtoFOMAML(L.LightningModule):
         # perform inner loop training on this model
         # evaluate on the query set
         # log the validation loss and validation accuracy
-        self.validate(batch)
+        self.runMetaWorkflow(batch, train=False)
 
     def training_step(self, batch, batch_idx):
         # Set seeds for reproducibility
         # torch.manual_seed(42)
         # random.seed(42)
-        self.metaTrain(batch)
+        self.runMetaWorkflow(batch)
