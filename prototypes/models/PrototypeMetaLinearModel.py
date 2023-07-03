@@ -12,8 +12,6 @@ class PrototypeMetaLinearModel(nn.Module, PrototypeModel):
     def __init__(self, metaLearner: PrototypeMetaModel, classes):
         super(PrototypeMetaLinearModel, self).__init__()
         self.metaLearner = metaLearner
-        # Apply a seed to reproduce exact results
-        # torch.manual_seed(42)
         self.linear = nn.Linear(HIDDEN_MODEL_SIZE, classes)
         torch.nn.init.xavier_uniform_(self.linear.weight)
 

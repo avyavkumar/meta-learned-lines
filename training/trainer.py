@@ -1,13 +1,36 @@
-from datasets import load_dataset
-import learn2learn as l2l
-from training_datasets.GLUEDataset import GLUEDataset
-from training_datasets.GLUEMetaDataset import GLUEMetaDataset
+import os
 
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 
-def train():
-    cola = load_dataset('glue', 'cola')
-    sst2 = load_dataset('glue', 'sst2')
-    glue_dataset = GLUEDataset([cola, sst2], 'train')
+MODEL_PATH = "models/meta_learned_model/"
 
-    glue_meta_dataset = GLUEMetaDataset(glue_dataset, k=3, numTasks=5000)
-    task = glue_meta_dataset.getTask()
+# adapted from https://lightning.ai/docs/pytorch/latest/notebooks/course_UvA-DL/12-meta-learning.html
+def train_model(modelType, train_loader, val_loader, seed=42, **args):
+    trainer = pl.Trainer(
+        default_root_dir=os.path.join(MODEL_PATH, modelType.__name__),
+        accelerator="auto",
+        devices=1,
+        max_epochs=200,
+        callbacks=[
+            ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_acc"),
+            LearningRateMonitor("epoch"),
+        ],
+        enable_progress_bar=False,
+    )
+    trainer.logger._default_hp_metric = None
+
+    # if a model exists, use that instead of training a new one
+    existing_model = os.path.join(MODEL_PATH, modelType.__name__ + ".ckpt")
+    if os.path.isfile(existing_model):
+        print("Using model", existing_model)
+        # Automatically loads the model with the saved hyperparameters
+        model = modelType.load_from_checkpoint(existing_model)
+    else:
+        pl.seed_everything(seed)
+        model = modelType(**args)
+        trainer.fit(model, train_loader)
+        model = model.load_from_checkpoint(
+            trainer.checkpoint_callback.best_model_path
+        )
+    return model

@@ -25,11 +25,11 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
                 param.requires_grad = False
 
     def forward(self, inputs):
-        tokenized_inputs = self.tokenizer(inputs, return_tensors="pt", padding=True)
+        tokenized_inputs = self.tokenizer(inputs, return_tensors="pt", padding=True, truncation=True)
         outputs = self.bert(**tokenized_inputs)
         encoding = outputs.last_hidden_state[:, 0, :]
         hidden_output = self.hidden(encoding)
-        return self.relu(hidden_output)
+        return hidden_output
 
     def getEncoder(self):
         return "BERT"
