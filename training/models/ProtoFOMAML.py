@@ -17,13 +17,14 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as L
 from utils.ModelUtils import get_prototypes
 
-
-# TODO check if prototypes are evaluated correctly
-# TODO collect all validation loop results and then log the accuracy
+# TODO get random GLUE datasets and get training episodes from them
 class ProtoFOMAML(L.LightningModule):
 
     def __init__(self, outerLR, innerLR, outputLR, steps, batchSize, warmupSteps):
         super().__init__()
+        self.predictions = []
+        self.actualLabels = []
+        self.losses = []
         self.save_hyperparameters()
         self.metaLearner = PrototypeMetaModel()
 
@@ -132,10 +133,9 @@ class ProtoFOMAML(L.LightningModule):
             # zero the parameter gradients
             optimiser_1.zero_grad()
             optimiser_2.zero_grad()
-        if train:
-            print("inner loop training loss is", sum(training_losses))
-            self.log("inner_loop_training_loss", sum(training_losses))
-            self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions))
+        print("inner loop training loss is", sum(training_losses))
+        self.log("inner_loop_training_loss", sum(training_losses), batch_size=len(training_losses))
+        self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions), batch_size=len(predictions))
 
     def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels, train=True):
         # create models for inner loop updates
@@ -166,9 +166,6 @@ class ProtoFOMAML(L.LightningModule):
 
     def runOuterLoop(self, supportLines, querySentences, queryEncodings, queryLabels, train=True):
         assignments = []
-        predictions = []
-        actualLabels = []
-        losses = []
         for point in queryEncodings:
             dists = [
                 dist_to_line_multiD(point.detach().numpy(), line.getFirstPrototype().getLocation().detach().numpy(),
@@ -198,16 +195,14 @@ class ProtoFOMAML(L.LightningModule):
                     # compute the loss
                     losses_j = criterion(outputs, labels)
                     predictions_i = torch.argmax(outputs, dim=1).tolist()
-                    predictions.extend(predictions_i)
-                    actualLabels.extend(labels)
-                    losses.extend(losses_j)
+                    self.predictions.extend(predictions_i)
+                    self.actualLabels.extend(labels)
+                    self.losses.extend(losses_j)
                     if train:
-                        print("outer loop losses are", losses, "and loss is", losses_j.sum().item())
                         # calculate the gradients
                         losses_j.sum().backward()
                         # multiply the calculated gradients of each model by a scaling factor
                         self.updateGradients(losses_j, model_1, model_2, distances_1, distances_2)
-                        printed = False
                         # in first order approximation, the gradients are the sum of the inner and outer loop models
                         for metaParam, localParam_1, localParam_2 in zip(self.metaLearner.parameters(),
                                                                          model_1.metaLearner.parameters(),
@@ -217,20 +212,9 @@ class ProtoFOMAML(L.LightningModule):
                                     metaParam.grad = torch.zeros(localParam_1.grad.shape)
                                 metaParam.grad += localParam_1.grad
                                 metaParam.grad += localParam_2.grad
-                                if not printed:
-                                    # print("local param grad is", localParam_1.grad)
-                                    # print("local param grad is", localParam_2.grad)
-                                    # print("meta param grad is", metaParam.grad)
-                                    printed = True
                         model_1.zero_grad()
                         model_2.zero_grad()
-        if train:
-            self.log("outer_loop_training_accuracy", accuracy_score(actualLabels, predictions))
-            self.log("outer_loop_training_loss", sum(losses))
-        else:
-            self.log("outer_loop_validation_accuracy", accuracy_score(actualLabels, predictions), batch_size=len(predictions))
-            print("validation accuracy is", accuracy_score(actualLabels, predictions))
-            self.log("outer_loop_validation_loss", sum(losses), batch_size=len(predictions))
+        print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and loss is", sum(self.losses))
 
     def compareLines(self, lines_1, lines_2):
         for line_1, line_2 in zip(lines_1, lines_2):
@@ -239,8 +223,6 @@ class ProtoFOMAML(L.LightningModule):
         return True
 
     def runMetaWorkflow(self, batch, train=True):
-        accuracies = []
-        losses = []
         for episode_i in range(len(batch[0])):
             data, labels = batch[0][episode_i], batch[1][episode_i]
             # if the labels are not consistently 0-indexed, remap them for validation loop
@@ -289,12 +271,25 @@ class ProtoFOMAML(L.LightningModule):
         return trainingEncodings, lines
 
     def validation_step(self, batch, batch_idx):
+        self.resetMetrics()
         torch.set_grad_enabled(True)
         self.runMetaWorkflow(batch, train=False)
         torch.set_grad_enabled(False)
+        self.log("outer_loop_validation_accuracy", accuracy_score(self.actualLabels, self.predictions),
+                 batch_size=len(self.predictions))
+        print("validation accuracy is", accuracy_score(self.actualLabels, self.predictions))
+        self.log("outer_loop_validation_loss", sum(self.losses), batch_size=len(self.predictions))
 
     def training_step(self, batch, batch_idx):
         # zero the meta learning gradients
+        self.resetMetrics()
         self.metaLearner.zero_grad()
         self.runMetaWorkflow(batch)
+        self.log("outer_loop_training_accuracy", accuracy_score(self.actualLabels, self.predictions))
+        self.log("outer_loop_training_loss", sum(self.losses))
         return None
+
+    def resetMetrics(self):
+        self.actualLabels = []
+        self.losses = []
+        self.predictions = []

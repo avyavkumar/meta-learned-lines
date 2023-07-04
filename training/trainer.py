@@ -5,7 +5,6 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 
 MODEL_PATH = "models/meta_learned_model/"
 
-# adapted from https://lightning.ai/docs/pytorch/latest/notebooks/course_UvA-DL/12-meta-learning.html
 def train_model(modelType, train_loader, val_loader, seed=42, **args):
     trainer = pl.Trainer(
         default_root_dir=os.path.join(MODEL_PATH, modelType.__name__),
@@ -13,7 +12,7 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
         devices=1,
         max_epochs=200,
         callbacks=[
-            ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_acc"),
+            ModelCheckpoint(save_weights_only=True, mode="max", monitor="outer_loop_validation_accuracy"),
             LearningRateMonitor("epoch"),
         ],
         enable_progress_bar=False,
@@ -29,7 +28,7 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
     else:
         pl.seed_everything(seed)
         model = modelType(**args)
-        trainer.fit(model, train_loader)
+        trainer.fit(model, train_loader, val_loader)
         model = model.load_from_checkpoint(
             trainer.checkpoint_callback.best_model_path
         )
