@@ -1,7 +1,7 @@
 import os
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from transformers import logging
 logging.set_verbosity_error()
 
@@ -14,8 +14,8 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
         devices=1,
         max_epochs=200,
         callbacks=[
-            ModelCheckpoint(save_weights_only=True, mode="max", monitor="outer_loop_validation_accuracy"),
-            LearningRateMonitor("epoch"),
+            ModelCheckpoint(save_weights_only=True, mode="max", monitor="outer_loop_validation_accuracy"), LearningRateMonitor("epoch"),
+            EarlyStopping(monitor="outer_loop_validation_accuracy", min_delta=0.01, patience=5, verbose=False, mode="max")
         ],
         enable_progress_bar=False,
     )

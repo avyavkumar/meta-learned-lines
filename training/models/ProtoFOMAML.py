@@ -167,6 +167,8 @@ class ProtoFOMAML(L.LightningModule):
     def runOuterLoop(self, supportLines, querySentences, queryEncodings, queryLabels, train=True):
         assignments = []
         outerLoopLoss = 0.0
+        outerLoopPredictions = []
+        outerLoopLabels = []
         for point in queryEncodings:
             dists = [
                 dist_to_line_multiD(point.detach().numpy(), line.getFirstPrototype().getLocation().detach().numpy(),
@@ -197,6 +199,8 @@ class ProtoFOMAML(L.LightningModule):
                     losses_j = criterion(outputs, labels)
                     outerLoopLoss += losses_j.sum().item()
                     predictions_i = torch.argmax(outputs, dim=1).tolist()
+                    outerLoopPredictions.extend(predictions_i)
+                    outerLoopLabels.extend(labels)
                     self.predictions.extend(predictions_i)
                     self.actualLabels.extend(labels)
                     self.losses.extend(losses_j)
@@ -218,6 +222,8 @@ class ProtoFOMAML(L.LightningModule):
                         model_2.zero_grad()
         if train:
             print("outer loop training loss is", outerLoopLoss)
+        else:
+            print("outer loop validation accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions))
 
     def compareLines(self, lines_1, lines_2):
         for line_1, line_2 in zip(lines_1, lines_2):
@@ -282,7 +288,7 @@ class ProtoFOMAML(L.LightningModule):
         torch.set_grad_enabled(False)
         self.log("outer_loop_validation_accuracy", accuracy_score(self.actualLabels, self.predictions),
                  batch_size=len(self.predictions))
-        print("validation accuracy is", accuracy_score(self.actualLabels, self.predictions))
+        print("validation accuracy for the validation set is", accuracy_score(self.actualLabels, self.predictions))
         self.log("outer_loop_validation_loss", sum(self.losses), batch_size=len(self.predictions))
 
     def training_step(self, batch, batch_idx):
