@@ -2,6 +2,8 @@ import os
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from transformers import logging
+logging.set_verbosity_error()
 
 MODEL_PATH = "models/meta_learned_model/"
 

@@ -166,6 +166,7 @@ class ProtoFOMAML(L.LightningModule):
 
     def runOuterLoop(self, supportLines, querySentences, queryEncodings, queryLabels, train=True):
         assignments = []
+        outerLoopLoss = 0.0
         for point in queryEncodings:
             dists = [
                 dist_to_line_multiD(point.detach().numpy(), line.getFirstPrototype().getLocation().detach().numpy(),
@@ -194,6 +195,7 @@ class ProtoFOMAML(L.LightningModule):
                                                                                        supportLines[i].getSecondPrototype().getLocation())
                     # compute the loss
                     losses_j = criterion(outputs, labels)
+                    outerLoopLoss += losses_j.sum().item()
                     predictions_i = torch.argmax(outputs, dim=1).tolist()
                     self.predictions.extend(predictions_i)
                     self.actualLabels.extend(labels)
@@ -214,7 +216,8 @@ class ProtoFOMAML(L.LightningModule):
                                 metaParam.grad += localParam_2.grad
                         model_1.zero_grad()
                         model_2.zero_grad()
-        print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and loss is", sum(self.losses))
+        if train:
+            print("outer loop training loss is", outerLoopLoss)
 
     def compareLines(self, lines_1, lines_2):
         for line_1, line_2 in zip(lines_1, lines_2):
@@ -234,6 +237,7 @@ class ProtoFOMAML(L.LightningModule):
             # compute lines for the support set
             supportEncodings, supportLines = self.computeLines(supportSet, supportLabels)
             queryEncodings, queryLabels = get_labelled_episodic_training_data(querySet, queryLabels)
+            print("Number of labels in the episode are", len(set(supportLabels)), "and lines are", len(supportLines))
             # for each line in the support set, carry out meta-training
             for supportLine in supportLines:
                 # do not train if there is only one prototype
@@ -244,6 +248,7 @@ class ProtoFOMAML(L.LightningModule):
             # calculate the loss on the query set
             self.runOuterLoop(supportLines, querySet, queryEncodings, queryLabels, train)
         if train:
+            print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses))
             # update the gradients after accumulating them
             optimiser = self.optimizers()
             optimiser.step()

@@ -12,7 +12,23 @@ class GLUEDataset(Dataset):
         self.classLabelIndices = {}
         totalLabels = 0
         for d_i in range(len(datasets)):
-            if 'sentence1' in datasets[d_i][split][0].keys():
+            if 'premise' in datasets[d_i][split][0].keys():
+                premise = datasets[d_i][split]['premise']
+                hypothesis = datasets[d_i][split]['hypothesis']
+                labels = datasets[d_i][split]['label']
+                for i in range(len(premise)):
+                    concatenated_sentence = '[CLS] ' + premise[i] + ' [SEP] ' + hypothesis[i] + ' [SEP]'
+                    self.sentences.append(concatenated_sentence)
+                    self.labels.append(labels[i] + totalLabels)
+            elif 'question1' in datasets[d_i][split][0].keys():
+                question1 = datasets[d_i][split]['question1']
+                question2 = datasets[d_i][split]['question2']
+                labels = datasets[d_i][split]['label']
+                for i in range(len(question1)):
+                    concatenated_sentence = '[CLS] ' + question1[i] + ' [SEP] ' + question2[i] + ' [SEP]'
+                    self.sentences.append(concatenated_sentence)
+                    self.labels.append(labels[i] + totalLabels)
+            elif 'sentence1' in datasets[d_i][split][0].keys():
                 sentence1 = datasets[d_i][split]['sentence1']
                 sentence2 = datasets[d_i][split]['sentence2']
                 labels = datasets[d_i][split]['label']

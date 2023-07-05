@@ -1,19 +1,21 @@
-from samplers.FewShotEpisodeSampler import FewShotEpisodeSampler
-from training_datasets.GLUEDataset import GLUEDataset
+from training_datasets.GLUEMetaDataset import GLUEMetaDataset
 
 
 class FewShotEpisodeBatchSampler:
-    def __init__(self, dataset: GLUEDataset, kShot, nWay, batchSize, shuffle=True):
+    def __init__(self, dataset: GLUEMetaDataset, kShot, batchSize):
         super().__init__()
-        self.nWay = nWay
+        self.dataset = dataset
         self.kShot = kShot * 2
-        self.sampler = FewShotEpisodeSampler(dataset, kShot, nWay, shuffle)
         self.batchSize = batchSize
+        self.nWays = []
 
     def __iter__(self):
         episodeBatch = []
         for episode_i in range(self.batchSize):
-            episodeBatch.extend(next(iter(self.sampler)))
+            episode = next(iter(self.dataset))
+            _, labels = episode
+            self.nWays.append(len(set(labels)))
+            episodeBatch.extend(episode)
             if (episode_i + 1) % self.batchSize == 0:
                 yield episodeBatch
 
@@ -23,14 +25,24 @@ class FewShotEpisodeBatchSampler:
             batchedData = []
             batchedLabels = []
             while idx < len(dataset):
-                data = []
-                labels = []
-                for i in range(self.nWay * self.kShot):
-                    dataPoint, label = dataset[idx + i]
-                    data.append(dataPoint)
-                    labels.append(label)
+                data, labels = dataset[idx]
+                labels = labels.tolist()
+                # construct the support and query set
+                supportSet = []
+                supportLabels = []
+                querySet = []
+                queryLabels = []
+                for i in range(len(labels)):
+                    if supportLabels.count(labels[i]) < self.kShot // 2:
+                        supportSet.append(data[i])
+                        supportLabels.append(labels[i])
+                    else:
+                        querySet.append(data[i])
+                        queryLabels.append(labels[i])
+                data = supportSet + querySet
+                labels = supportLabels + queryLabels
                 batchedData.append(data)
                 batchedLabels.append(labels)
-                idx += self.nWay * self.kShot
+                idx += 1
             return batchedData, batchedLabels
         return collate
