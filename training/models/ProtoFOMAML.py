@@ -97,7 +97,7 @@ class ProtoFOMAML(L.LightningModule):
         return filteredTrainingSentences, np.array(filteredTrainingLabels)
 
     def runInnerLoopTrainingStep(self, line, model_1, model_2, filteredTrainingSentences, filteredTrainingEncodings,
-                                 filteredTrainingLabels, train=True):
+                                 filteredTrainingLabels):
         trainingParams = {
             'batch_size': self.hparams.batchSize
         }
@@ -160,7 +160,7 @@ class ProtoFOMAML(L.LightningModule):
         # use SGD to carry out few-shot adaptation
         for _ in range(self.hparams.steps):
             self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, filteredTrainingSentences,
-                                          filteredTrainingEncodings, filteredTrainingLabels_2, train)
+                                          filteredTrainingEncodings, filteredTrainingLabels_2)
         line.getFirstPrototype().setPrototypeModel(innerLoopModel_1)
         line.getSecondPrototype().setPrototypeModel(innerLoopModel_2)
 

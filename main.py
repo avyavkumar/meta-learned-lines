@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import random
 from argparse import ArgumentParser
 from training_datasets.GLUEMetaDataset import GLUEMetaDataset
 from samplers.FewShotEpisodeBatchSampler import FewShotEpisodeBatchSampler
@@ -27,11 +28,19 @@ def main(hyper_params):
         collate_fn=val_protomaml_sampler.getCollateFunction(),
         num_workers=4
     )
+    # pick a randomised seed
+    seed = random.randint(0, 10000)
     protomaml_model = train_model(
         ProtoFOMAML,
+        seed=seed,
         train_loader=train_protomaml_loader,
         val_loader=val_protomaml_loader,
-        outerLR=5e-4, innerLR=1e-3, outputLR=1e-2, steps=5, batchSize=4, warmupSteps=0
+        outerLR=hyper_params.outerLR,
+        innerLR=hyper_params.innerLR,
+        outputLR=hyper_params.outputLR,
+        steps=hyper_params.steps,
+        batchSize=hyper_params.batchSize,
+        warmupSteps=hyper_params.warmupSteps
     )
     return protomaml_model
 

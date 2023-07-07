@@ -28,10 +28,8 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
         # Automatically loads the model with the saved hyperparameters
         model = modelType.load_from_checkpoint(existing_model)
     else:
-        pl.seed_everything(seed)
         model = modelType(**args)
-        trainer.fit(model, train_loader, val_loader)
-        model = model.load_from_checkpoint(
-            trainer.checkpoint_callback.best_model_path
-        )
+    pl.seed_everything(seed)
+    trainer.fit(model, train_loader, val_loader)
+    model = model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     return model
