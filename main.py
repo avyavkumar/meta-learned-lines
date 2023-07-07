@@ -21,7 +21,7 @@ def main(hyper_params):
         collate_fn=train_protomaml_sampler.getCollateFunction(),
         num_workers=8)
     validation_dataset = ValidationDataset()
-    val_protomaml_sampler = FewShotValidationEpisodeBatchSampler(validation_dataset, kShot=hyper_params.kShot)
+    val_protomaml_sampler = FewShotValidationEpisodeBatchSampler(validation_dataset, kShot=hyper_params.kValShot)
     val_protomaml_loader = data.DataLoader(
         validation_dataset,
         batch_sampler=val_protomaml_sampler,
@@ -45,7 +45,7 @@ def main(hyper_params):
     return protomaml_model
 
 # Example command - python main.py --outerLR 5e-4 --innerLR 1e-3 --outputLR 1e-2 --steps 5 --batchSize 4
-# --warmupSteps 0 --kShot 4 --numTasks 10000
+# --warmupSteps 0 --kShot 4 --kValShot 4 --numTasks 10000
 
 if __name__ == '__main__':
     root_dir = os.path.dirname(os.path.realpath(__file__))
@@ -57,6 +57,7 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--batchSize', type=int)
     parser.add_argument('-w', '--warmupSteps', type=int)
     parser.add_argument('-k', '--kShot', type=int)
+    parser.add_argument('-kv', '--kValShot', type=int)
     parser.add_argument('-n', '--numTasks', type=int)
     hyper_params = parser.parse_args()
 

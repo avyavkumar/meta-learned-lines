@@ -41,7 +41,7 @@ def get_labelled_validation_sentences(path, category):
 
 def balance_and_subsample(sentences, labels):
     total_classes = len(set(labels))
-    elements_per_class = 200 // total_classes
+    elements_per_class = 300 // total_classes
     subsampled_sentences = []
     subsampled_labels = []
     for class_i in range(total_classes):
