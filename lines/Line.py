@@ -4,11 +4,12 @@ from prototypes.Prototype import Prototype
 from prototypes.models.PrototypeClassifierModels import CLASSIFIER_MODEL_2NN, CLASSIFIER_MODEL_4NN, \
     PrototypeClassifierModel4NN, PrototypeClassifierModel2NN
 from prototypes.models.PrototypeMetaLinearModel import PrototypeMetaLinearModel
+from utils import ModelUtils
 from utils.Constants import BERT_DIMS, PROTOTYPE_META_MODEL, HIDDEN_MODEL_SIZE
 
 
 class Line:
-    def __init__(self, totalClasses, centroids, labels, modelType: str, metaLearner=None, labelDict=None):
+    def __init__(self, totalClasses, centroids, labels, modelType: str, metaLearner=None):
         self.totalClasses = totalClasses
         self.centroids = centroids
         self.labels = labels
@@ -16,15 +17,6 @@ class Line:
         self.secondPrototype = None
         self.modelType = modelType
         self.openPrototypes(modelType, metaLearner)
-        # self.labelDict = self.createLabelDict(labels, labelDict)
-
-    # def createLabelDict(self, labels, labelDict):
-    #     if labelDict is not None:
-    #         return labelDict
-    #     lineLabelIndices = {}
-    #     for i in range(len(labels)):
-    #         lineLabelIndices[labels[i]] = i
-    #     return lineLabelIndices
 
     def openPrototypes(self, modelType, metaLearner=None):
         if modelType == CLASSIFIER_MODEL_4NN:

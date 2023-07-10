@@ -11,13 +11,14 @@ from lines.Line import Line
 from lines.lo_shot_utils import dist_to_line_multiD
 from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
 from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
+from utils import ModelUtils
 from utils.Constants import PROTOTYPE_META_MODEL
 from lines.LineGenerator import LineGenerator
 from torch.utils.data import DataLoader
 import pytorch_lightning as L
 from utils.ModelUtils import get_prototypes
 
-# TODO get random GLUE datasets and get training episodes from them
+# TODO delete extra validation models from device
 class ProtoFOMAML(L.LightningModule):
 
     def __init__(self, outerLR, innerLR, outputLR, steps, batchSize, warmupSteps):
@@ -33,7 +34,7 @@ class ProtoFOMAML(L.LightningModule):
         filteredTrainingLabels = []
         for i in range(len(training_labels)):
             if training_labels[i] in labels:
-                filteredTrainingData.append(training_data[i].detach().numpy())
+                filteredTrainingData.append(training_data[i].detach().cpu().numpy())
                 filteredTrainingLabels.append(training_labels[i])
         return torch.Tensor(np.array(filteredTrainingData)), np.array(filteredTrainingLabels)
 
@@ -78,10 +79,10 @@ class ProtoFOMAML(L.LightningModule):
         distances_1 = []
         distances_2 = []
         for i in range(encodings.shape[0]):
-            distances_1.append(np.linalg.norm(encodings[i].detach().numpy() - location_1.detach().numpy()))
-            distances_2.append(np.linalg.norm(encodings[i].detach().numpy() - location_2.detach().numpy()))
-        distances_1 = torch.unsqueeze(torch.Tensor(np.array(distances_1)), 1)
-        distances_2 = torch.unsqueeze(torch.Tensor(np.array(distances_2)), 1)
+            distances_1.append(np.linalg.norm(encodings[i].detach().cpu().numpy() - location_1.detach().cpu().numpy()))
+            distances_2.append(np.linalg.norm(encodings[i].detach().cpu().numpy() - location_2.detach().cpu().numpy()))
+        distances_1 = torch.unsqueeze(torch.Tensor(np.array(distances_1)), 1).to(ModelUtils.DEVICE)
+        distances_2 = torch.unsqueeze(torch.Tensor(np.array(distances_2)), 1).to(ModelUtils.DEVICE)
         # compute the weighted probability distribution
         outputs = output_1 / distances_1 + output_2 / distances_2
         # return the final weighted probability distribution
@@ -118,7 +119,7 @@ class ProtoFOMAML(L.LightningModule):
                                                                                line.getFirstPrototype().getLocation(),
                                                                                line.getSecondPrototype().getLocation())
             # compute the loss
-            losses = criterion(outputs, labels)
+            losses = criterion(outputs, labels.to(ModelUtils.DEVICE))
             predictions_i = torch.argmax(outputs, dim=1).tolist()
             predictions.extend(predictions_i)
             correctLabels.extend(labels)
@@ -141,7 +142,9 @@ class ProtoFOMAML(L.LightningModule):
         # create models for inner loop updates
         innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
         innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
-
+        # add these models to the GPU if there is a GPU
+        innerLoopModel_1.to(ModelUtils.DEVICE)
+        innerLoopModel_2.to(ModelUtils.DEVICE)
         # filter support encodings and labels to ensure that only line-specific data is used for training
         filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), supportSet,
                                                                                            supportLabels)
@@ -171,12 +174,12 @@ class ProtoFOMAML(L.LightningModule):
         outerLoopLabels = []
         for point in queryEncodings:
             dists = [
-                dist_to_line_multiD(point.detach().numpy(), line.getFirstPrototype().getLocation().detach().numpy(),
-                                    line.getSecondPrototype().getLocation().detach().numpy()) for line in supportLines]
+                dist_to_line_multiD(point.detach().cpu().numpy(), line.getFirstPrototype().getLocation().detach().cpu().numpy(),
+                                    line.getSecondPrototype().getLocation().detach().cpu().numpy()) for line in supportLines]
             nearest = np.argmin(dists)
             assignments.append(nearest)
         for i in range(len(supportLines)):
-            requiredQueryEncodings = np.array([queryEncodings[x].detach().numpy() for x in range((len(assignments))) if assignments[x] == i])
+            requiredQueryEncodings = np.array([queryEncodings[x].detach().cpu().numpy() for x in range((len(assignments))) if assignments[x] == i])
             requiredQuerySentences = [querySentences[x] for x in range((len(assignments))) if assignments[x] == i]
             requiredQueryEncodings = torch.from_numpy(requiredQueryEncodings)
             if requiredQueryEncodings.shape[0] > 0:
@@ -196,7 +199,7 @@ class ProtoFOMAML(L.LightningModule):
                                                                                        supportLines[i].getFirstPrototype().getLocation(),
                                                                                        supportLines[i].getSecondPrototype().getLocation())
                     # compute the loss
-                    losses_j = criterion(outputs, labels)
+                    losses_j = criterion(outputs, labels.to(ModelUtils.DEVICE))
                     outerLoopLoss += losses_j.sum().item()
                     predictions_i = torch.argmax(outputs, dim=1).tolist()
                     outerLoopPredictions.extend(predictions_i)
@@ -222,6 +225,8 @@ class ProtoFOMAML(L.LightningModule):
                         model_2.zero_grad()
         if train:
             print("outer loop training loss is", outerLoopLoss)
+            print(self.predictions)
+            print(self.actualLabels)
         else:
             print("outer loop validation accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions))
 

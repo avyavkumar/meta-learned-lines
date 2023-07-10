@@ -26,7 +26,7 @@ def main(hyper_params):
         validation_dataset,
         batch_sampler=val_protomaml_sampler,
         collate_fn=val_protomaml_sampler.getCollateFunction(),
-        num_workers=1
+        num_workers=2
     )
     # pick a randomised seed
     seed = random.randint(0, 10000)

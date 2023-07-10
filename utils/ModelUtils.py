@@ -1,5 +1,6 @@
 import torch
 
+DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 def get_prototypes(inputs, labels):
     labels = torch.tensor(labels, dtype=torch.int8)

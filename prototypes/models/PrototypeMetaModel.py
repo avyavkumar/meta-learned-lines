@@ -1,8 +1,8 @@
-import torch
 from torch import nn
 from transformers import BertModel, BertTokenizer
-from utils.ModelUtils import get_prototypes
-from utils.Constants import BERT_DIMS, HIDDEN_MODEL_SIZE, PROTOFOMAML
+
+from utils import ModelUtils
+from utils.Constants import BERT_DIMS, HIDDEN_MODEL_SIZE
 
 from prototypes.PrototypeModel import PrototypeModel
 
@@ -12,7 +12,7 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
     def __init__(self):
         super(PrototypeMetaModel, self).__init__()
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
-        self.bert = BertModel.from_pretrained("bert-base-cased")
+        self.bert = BertModel.from_pretrained("bert-base-cased").to(ModelUtils.DEVICE)
         self.hidden = nn.Linear(BERT_DIMS, HIDDEN_MODEL_SIZE)
         self.relu = nn.ReLU()
         self.tunableLayers = {str(l) for l in range(8, 12)}
@@ -25,7 +25,7 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
                 param.requires_grad = False
 
     def forward(self, inputs):
-        tokenized_inputs = self.tokenizer(inputs, return_tensors="pt", padding=True, truncation=True)
+        tokenized_inputs = self.tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).to(ModelUtils.DEVICE)
         outputs = self.bert(**tokenized_inputs)
         encoding = outputs.last_hidden_state[:, 0, :]
         hidden_output = self.hidden(encoding)

@@ -1,16 +1,20 @@
 import os
 
 import pytorch_lightning as pl
+import torch
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from transformers import logging
+
 logging.set_verbosity_error()
 
 MODEL_PATH = "models/meta_learned_model/"
 
+
 def train_model(modelType, train_loader, val_loader, seed=42, **args):
+    torch.set_float32_matmul_precision('medium')
     trainer = pl.Trainer(
         default_root_dir=os.path.join(MODEL_PATH, modelType.__name__),
-        accelerator="auto",
+        accelerator="gpu",
         devices=1,
         max_epochs=200,
         check_val_every_n_epoch=10,
