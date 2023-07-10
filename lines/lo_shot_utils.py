@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import cvxpy as cp
 from itertools import combinations
+import os
 import pandas as pd
 import poisson_disc as poi
 import mosek
@@ -630,7 +631,8 @@ def find_lines_R_multiD(dat, labels, centroids, dims=2, k=5, max_diff=1e-5):
 
 def invoke_R_wrapper(df, k, max_diff, dims):
     r = ro.r
-    r.source("/home/aksingh/Documents/meta-learned-lines/lines/lo_shot_definitions.R")
+    script_path = os.path.abspath(os.getcwd()) + "/lines/lo_shot_definitions.R"
+    r.source(script_path)
     data = df.iloc[:, :-1].to_numpy()
     labels = df.iloc[:, -1:].to_numpy() + 1
 

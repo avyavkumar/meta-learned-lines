@@ -19,14 +19,14 @@ def main(hyper_params):
         meta_dataset,
         batch_sampler=train_protomaml_sampler,
         collate_fn=train_protomaml_sampler.getCollateFunction(),
-        num_workers=8)
+        num_workers=1)
     validation_dataset = ValidationDataset()
     val_protomaml_sampler = FewShotValidationEpisodeBatchSampler(validation_dataset, kShot=hyper_params.kValShot)
     val_protomaml_loader = data.DataLoader(
         validation_dataset,
         batch_sampler=val_protomaml_sampler,
         collate_fn=val_protomaml_sampler.getCollateFunction(),
-        num_workers=4
+        num_workers=1
     )
     # pick a randomised seed
     seed = random.randint(0, 10000)

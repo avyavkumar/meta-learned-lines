@@ -13,6 +13,7 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
         accelerator="auto",
         devices=1,
         max_epochs=200,
+        check_val_every_n_epoch=10,
         callbacks=[
             ModelCheckpoint(save_weights_only=True, mode="max", monitor="outer_loop_validation_accuracy"), LearningRateMonitor("epoch"),
             EarlyStopping(monitor="outer_loop_validation_accuracy", min_delta=0.01, patience=5, verbose=False, mode="max")
