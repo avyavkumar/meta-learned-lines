@@ -16,7 +16,8 @@ from utils.Constants import PROTOTYPE_META_MODEL
 from lines.LineGenerator import LineGenerator
 from torch.utils.data import DataLoader
 import pytorch_lightning as L
-from utils.ModelUtils import get_prototypes
+from utils.ModelUtils import get_prototypes, DEVICE, CPU_DEVICE
+
 
 # TODO delete extra validation models from device
 class ProtoFOMAML(L.LightningModule):
@@ -44,12 +45,12 @@ class ProtoFOMAML(L.LightningModule):
         return [optimiser], [scheduler]
 
     def updateGradients(self, losses, model_1, model_2, distances_1, distances_2):
-        losses_1 = losses.clone().detach()
-        losses_2 = losses.clone().detach()
+        losses_1 = losses.clone().detach().cpu()
+        losses_2 = losses.clone().detach().cpu()
         losses_1 = distances_2.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_1
         losses_2 = distances_1.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_2
-        loss_ratio_1 = (losses_1.sum() / (losses_1.sum() + losses_2.sum()))
-        loss_ratio_2 = (losses_2.sum() / (losses_1.sum() + losses_2.sum()))
+        loss_ratio_1 = losses_1.sum() / (losses_1.sum() + losses_2.sum())
+        loss_ratio_2 = losses_2.sum() / (losses_1.sum() + losses_2.sum())
         model_1.scaleGradients(loss_ratio_1)
         model_2.scaleGradients(loss_ratio_2)
 
@@ -73,18 +74,20 @@ class ProtoFOMAML(L.LightningModule):
         return get_constant_schedule_with_warmup(optimiser, num_warmup_steps=self.hparams.warmupSteps)
 
     def computeLabelsAndDistances(self, inputs, encodings, model_1, model_2, location_1, location_2):
-        output_1 = model_1(inputs)
-        output_2 = model_2(inputs)
+        output_1 = model_1(inputs).to(CPU_DEVICE)
+        output_2 = model_2(inputs).to(CPU_DEVICE)
         # get distances from the prototypes for all inputs
         distances_1 = []
         distances_2 = []
         for i in range(encodings.shape[0]):
             distances_1.append(np.linalg.norm(encodings[i].detach().cpu().numpy() - location_1.detach().cpu().numpy()))
             distances_2.append(np.linalg.norm(encodings[i].detach().cpu().numpy() - location_2.detach().cpu().numpy()))
-        distances_1 = torch.unsqueeze(torch.Tensor(np.array(distances_1)), 1).to(ModelUtils.DEVICE)
-        distances_2 = torch.unsqueeze(torch.Tensor(np.array(distances_2)), 1).to(ModelUtils.DEVICE)
+        distances_1 = torch.unsqueeze(torch.Tensor(np.array(distances_1)), 1)
+        distances_2 = torch.unsqueeze(torch.Tensor(np.array(distances_2)), 1)
         # compute the weighted probability distribution
         outputs = output_1 / distances_1 + output_2 / distances_2
+        # delete the outputs
+        del output_1, output_2
         # return the final weighted probability distribution
         return outputs, distances_1, distances_2
 
@@ -119,7 +122,7 @@ class ProtoFOMAML(L.LightningModule):
                                                                                line.getFirstPrototype().getLocation(),
                                                                                line.getSecondPrototype().getLocation())
             # compute the loss
-            losses = criterion(outputs, labels.to(ModelUtils.DEVICE))
+            losses = criterion(outputs, labels)
             predictions_i = torch.argmax(outputs, dim=1).tolist()
             predictions.extend(predictions_i)
             correctLabels.extend(labels)
@@ -134,14 +137,15 @@ class ProtoFOMAML(L.LightningModule):
             # zero the parameter gradients
             optimiser_1.zero_grad()
             optimiser_2.zero_grad()
+            del outputs, distances_1, distances_2
         print("inner loop training loss is", sum(training_losses))
         self.log("inner_loop_training_loss", sum(training_losses), batch_size=len(training_losses))
         self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions), batch_size=len(predictions))
 
     def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels, train=True):
         # create models for inner loop updates
-        innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
-        innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
+        innerLoopModel_1 = line.getFirstPrototype().getPrototypeModel()
+        innerLoopModel_2 = line.getSecondPrototype().getPrototypeModel()
         # add these models to the GPU if there is a GPU
         innerLoopModel_1.to(ModelUtils.DEVICE)
         innerLoopModel_2.to(ModelUtils.DEVICE)
@@ -164,6 +168,11 @@ class ProtoFOMAML(L.LightningModule):
         for _ in range(self.hparams.steps):
             self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, filteredTrainingSentences,
                                           filteredTrainingEncodings, filteredTrainingLabels_2)
+        # delete everything to free the memory
+        del prototypicalEmbeddings_1, filteredTrainingEncodings
+        # put these models on the CPU again as part of the line
+        innerLoopModel_1.to(CPU_DEVICE)
+        innerLoopModel_2.to(CPU_DEVICE)
         line.getFirstPrototype().setPrototypeModel(innerLoopModel_1)
         line.getSecondPrototype().setPrototypeModel(innerLoopModel_2)
 
@@ -192,22 +201,26 @@ class ProtoFOMAML(L.LightningModule):
                 criterion = self.getCriterion()
                 model_1 = supportLines[i].getFirstPrototype().getPrototypeModel()
                 model_2 = supportLines[i].getSecondPrototype().getPrototypeModel()
+                # put these models on the GPU
+                model_1.to(DEVICE)
+                model_2.to(DEVICE)
                 for j, data in enumerate(trainLoader, 0):
-                    # get the inputs; data is a list of [inputs, encodings, labels]
-                    inputs, encodings, labels = data
-                    outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
-                                                                                       supportLines[i].getFirstPrototype().getLocation(),
-                                                                                       supportLines[i].getSecondPrototype().getLocation())
-                    # compute the loss
-                    losses_j = criterion(outputs, labels.to(ModelUtils.DEVICE))
-                    outerLoopLoss += losses_j.sum().item()
-                    predictions_i = torch.argmax(outputs, dim=1).tolist()
-                    outerLoopPredictions.extend(predictions_i)
-                    outerLoopLabels.extend(labels)
-                    self.predictions.extend(predictions_i)
-                    self.actualLabels.extend(labels)
-                    self.losses.extend(losses_j)
                     if train:
+                        # get the inputs; data is a list of [inputs, encodings, labels]
+                        inputs, encodings, labels = data
+                        outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
+                                                                                           supportLines[i].getFirstPrototype().getLocation(),
+                                                                                           supportLines[i].getSecondPrototype().getLocation())
+                        # compute the loss
+                        losses_j = criterion(outputs.to(DEVICE), labels.to(DEVICE))
+                        outerLoopLoss += losses_j.sum().item()
+                        predictions_i = torch.argmax(outputs, dim=1).tolist()
+                        labels = [labels[i].item() for i in range(labels.shape[0])]
+                        outerLoopPredictions.extend(predictions_i)
+                        outerLoopLabels.extend(labels)
+                        self.predictions.extend(predictions_i)
+                        self.actualLabels.extend(labels)
+                        self.losses.extend(losses_j)
                         # calculate the gradients
                         losses_j.sum().backward()
                         # multiply the calculated gradients of each model by a scaling factor
@@ -223,12 +236,27 @@ class ProtoFOMAML(L.LightningModule):
                                 metaParam.grad += localParam_2.grad
                         model_1.zero_grad()
                         model_2.zero_grad()
+                        del losses_j, outputs, labels, distances_1, distances_2
+                    else:
+                        with torch.no_grad():
+                            inputs, encodings, labels = data
+                            outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
+                                                                                               supportLines[i].getFirstPrototype().getLocation(),
+                                                                                               supportLines[i].getSecondPrototype().getLocation())
+                            # compute the loss
+                            losses_j = criterion(outputs.to(DEVICE), labels.to(DEVICE))
+                            outerLoopLoss += losses_j.sum().item()
+                            predictions_i = torch.argmax(outputs, dim=1).tolist()
+                            labels = [labels[i].item() for i in range(labels.shape[0])]
+                            outerLoopPredictions.extend(predictions_i)
+                            outerLoopLabels.extend(labels)
+                            self.predictions.extend(predictions_i)
+                            self.actualLabels.extend(labels)
+                            self.losses.extend(losses_j)
         if train:
             print("outer loop training loss is", outerLoopLoss)
-            print(self.predictions)
-            print(self.actualLabels)
         else:
-            print("outer loop validation accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions))
+            print("outer loop episodic validation accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions))
 
     def compareLines(self, lines_1, lines_2):
         for line_1, line_2 in zip(lines_1, lines_2):
@@ -258,6 +286,7 @@ class ProtoFOMAML(L.LightningModule):
                 self.trainInnerLoop(supportLine, supportSet, supportEncodings, supportLabels, train)
             # calculate the loss on the query set
             self.runOuterLoop(supportLines, querySet, queryEncodings, queryLabels, train)
+            del supportLines, supportEncodings, queryEncodings
         if train:
             print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses))
             # update the gradients after accumulating them
@@ -293,7 +322,7 @@ class ProtoFOMAML(L.LightningModule):
         torch.set_grad_enabled(False)
         self.log("outer_loop_validation_accuracy", accuracy_score(self.actualLabels, self.predictions),
                  batch_size=len(self.predictions))
-        print("validation accuracy for the validation set is", accuracy_score(self.actualLabels, self.predictions))
+        print("validation accuracy for the validation set is", accuracy_score(self.actualLabels, self.predictions), "\n")
         self.log("outer_loop_validation_loss", sum(self.losses), batch_size=len(self.predictions))
 
     def training_step(self, batch, batch_idx):
@@ -303,6 +332,7 @@ class ProtoFOMAML(L.LightningModule):
         self.runMetaWorkflow(batch)
         self.log("outer_loop_training_accuracy", accuracy_score(self.actualLabels, self.predictions))
         self.log("outer_loop_training_loss", sum(self.losses))
+        print("\n")
         return None
 
     def resetMetrics(self):

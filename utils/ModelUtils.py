@@ -1,6 +1,10 @@
 import torch
+from transformers import BertModel, BertTokenizer
 
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+CPU_DEVICE = torch.device('cpu')
+MODEL = BertModel.from_pretrained("bert-base-cased").to(DEVICE)
+TOKENIZER = BertTokenizer.from_pretrained("bert-base-cased")
 
 def get_prototypes(inputs, labels):
     labels = torch.tensor(labels, dtype=torch.int8)

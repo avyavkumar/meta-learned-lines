@@ -12,7 +12,7 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
     def __init__(self):
         super(PrototypeMetaModel, self).__init__()
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
-        self.bert = BertModel.from_pretrained("bert-base-cased").to(ModelUtils.DEVICE)
+        self.bert = BertModel.from_pretrained("bert-base-cased")
         self.hidden = nn.Linear(BERT_DIMS, HIDDEN_MODEL_SIZE)
         self.relu = nn.ReLU()
         self.tunableLayers = {str(l) for l in range(8, 12)}
@@ -29,6 +29,7 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         outputs = self.bert(**tokenized_inputs)
         encoding = outputs.last_hidden_state[:, 0, :]
         hidden_output = self.hidden(encoding)
+        del tokenized_inputs
         return hidden_output
 
     def getEncoder(self):

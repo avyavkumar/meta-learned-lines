@@ -1,14 +1,7 @@
-import numpy as np
 import torch
-
-from transformers import BertTokenizer, BertModel
-from random import randint
+from utils.ModelUtils import TOKENIZER, MODEL, DEVICE
 
 BERT_INPUT_DIMS = 768
-
-DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-MODEL = BertModel.from_pretrained("bert-base-cased").to(DEVICE)
-TOKENIZER = BertTokenizer.from_pretrained("bert-base-cased")
 
 """
 Return the episodic datautils with encoded data points.
@@ -24,5 +17,6 @@ def get_labelled_episodic_training_data(data, labels):
         inputs = TOKENIZER(data[i], return_tensors="pt", padding=True, truncation=True).to(DEVICE)
         outputs = MODEL(**inputs)
         encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
-        training_encodings.append(encoding)
+        training_encodings.append(encoding.detach().cpu())
+        del inputs, outputs, encoding
     return torch.stack(training_encodings, dim=0), torch.Tensor(training_labels)
