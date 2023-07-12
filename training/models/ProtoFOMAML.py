@@ -19,7 +19,11 @@ import pytorch_lightning as L
 from utils.ModelUtils import get_prototypes, DEVICE, CPU_DEVICE
 
 
-# TODO delete extra validation models from device
+# TODO check if data is correct and training is going as expected
+# TODO log metrics of individual validation episodes
+# TODO load model from checkpoint and check if everything works as expected
+# TODO write code for distributed hyper param checking
+
 class ProtoFOMAML(L.LightningModule):
 
     def __init__(self, outerLR, innerLR, outputLR, steps, batchSize, warmupSteps):
@@ -28,7 +32,9 @@ class ProtoFOMAML(L.LightningModule):
         self.actualLabels = []
         self.losses = []
         self.save_hyperparameters()
+        self.val_episode = 0
         self.metaLearner = PrototypeMetaModel()
+        print("Training ProtoFOMAML with parameters", self.hparams)
 
     def filterEncodingsByLabels(self, labels, training_data, training_labels):
         filteredTrainingData = []
@@ -254,9 +260,13 @@ class ProtoFOMAML(L.LightningModule):
                             self.actualLabels.extend(labels)
                             self.losses.extend(losses_j)
         if train:
-            print("outer loop training loss is", outerLoopLoss)
+            print("outer loop training accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions), "and loss is", outerLoopLoss)
         else:
-            print("outer loop episodic validation accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions))
+            print("outer loop episodic validation accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions), "and loss is", outerLoopLoss)
+            self.log("outer_loop_validation_loss_" + str(self.val_episode), outerLoopLoss, batch_size=len(outerLoopLabels))
+            self.log("outer_loop_validation_accuracy_" + str(self.val_episode), accuracy_score(outerLoopLabels, outerLoopPredictions), batch_size=len(outerLoopLabels))
+            self.val_episode += 1
+            self.val_episode %= 8 # since we have 8 episodes in a validation set
 
     def compareLines(self, lines_1, lines_2):
         for line_1, line_2 in zip(lines_1, lines_2):

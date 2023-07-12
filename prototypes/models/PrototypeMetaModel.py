@@ -29,8 +29,9 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         outputs = self.bert(**tokenized_inputs)
         encoding = outputs.last_hidden_state[:, 0, :]
         hidden_output = self.hidden(encoding)
+        output = self.relu(hidden_output)
         del tokenized_inputs
-        return hidden_output
+        return output
 
     def getEncoder(self):
         return "BERT"
