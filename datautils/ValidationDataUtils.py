@@ -16,7 +16,7 @@ def get_categories_sentiment():
     return categories
 
 
-def get_labelled_validation_sentences(path, category):
+def get_labelled_validation_sentences(path, category, balance_and_subsample=False):
     sentences = []
     labels = []
     label_keys = {}
@@ -36,10 +36,12 @@ def get_labelled_validation_sentences(path, category):
                     label_keys[label] = label_index
                     label_index += 1
                 labels.append(label_keys[label])
-    return balance_and_subsample(sentences, labels)
+    if balance_and_subsample is True:
+        return balance_and_subsample_dataset(sentences, labels)
+    else:
+        return sentences, labels
 
-
-def balance_and_subsample(sentences, labels):
+def balance_and_subsample_dataset(sentences, labels):
     total_classes = len(set(labels))
     elements_per_class = 300 // total_classes
     subsampled_sentences = []

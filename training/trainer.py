@@ -11,16 +11,16 @@ MODEL_PATH = "models/meta_learned_model/"
 
 
 def train_model(modelType, train_loader, val_loader, seed=42, **args):
-    torch.set_float32_matmul_precision('medium')
+    torch.set_float32_matmul_precision('high')
     trainer = pl.Trainer(
         default_root_dir=os.path.join(MODEL_PATH, modelType.__name__),
         accelerator="gpu",
         devices="auto",
-        max_epochs=200,
-        check_val_every_n_epoch=5,
+        max_epochs=20000,
+        check_val_every_n_epoch=20,
         callbacks=[
             ModelCheckpoint(save_weights_only=True, mode="max", monitor="outer_loop_validation_accuracy"), LearningRateMonitor("epoch"),
-            EarlyStopping(monitor="outer_loop_validation_accuracy", min_delta=0.01, patience=5, verbose=False, mode="max")
+            EarlyStopping(monitor="outer_loop_validation_accuracy", min_delta=0.01, patience=7, verbose=False, mode="max")
         ],
         enable_progress_bar=False,
     )

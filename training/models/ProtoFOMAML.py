@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as L
 from utils.ModelUtils import get_prototypes, DEVICE, CPU_DEVICE
 
+EPSILON = 1e-7
 
 # TODO check if data is correct and training is going as expected
 # TODO log metrics of individual validation episodes
@@ -128,30 +129,31 @@ class ProtoFOMAML(L.LightningModule):
                                                                                line.getFirstPrototype().getLocation(),
                                                                                line.getSecondPrototype().getLocation())
             # compute the loss
-            losses = criterion(outputs, labels)
+            losses = criterion(outputs + EPSILON, labels)
             predictions_i = torch.argmax(outputs, dim=1).tolist()
             predictions.extend(predictions_i)
             correctLabels.extend(labels)
-            # calculate the gradients
-            losses.sum().backward()
-            training_losses.append(losses.sum().item())
-            # multiply the calculated gradients of each model by a scaling factor
-            self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
-            # update the gradients
-            optimiser_1.step()
-            optimiser_2.step()
-            # zero the parameter gradients
-            optimiser_1.zero_grad()
-            optimiser_2.zero_grad()
+            if losses.sum().item() > 0:
+                # calculate the gradients
+                losses.sum().backward()
+                training_losses.append(losses.sum().item())
+                # multiply the calculated gradients of each model by a scaling factor
+                self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
+                # update the gradients
+                optimiser_1.step()
+                optimiser_2.step()
+                # zero the parameter gradients
+                optimiser_1.zero_grad()
+                optimiser_2.zero_grad()
             del outputs, distances_1, distances_2
-        print("inner loop training loss is", sum(training_losses))
+        print("inner loop training loss is", sum(training_losses), "and accuracy is", accuracy_score(correctLabels, predictions))
         self.log("inner_loop_training_loss", sum(training_losses), batch_size=len(training_losses))
         self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions), batch_size=len(predictions))
 
     def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels, train=True):
         # create models for inner loop updates
-        innerLoopModel_1 = line.getFirstPrototype().getPrototypeModel()
-        innerLoopModel_2 = line.getSecondPrototype().getPrototypeModel()
+        innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
+        innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
         # add these models to the GPU if there is a GPU
         innerLoopModel_1.to(ModelUtils.DEVICE)
         innerLoopModel_2.to(ModelUtils.DEVICE)
@@ -218,7 +220,7 @@ class ProtoFOMAML(L.LightningModule):
                                                                                            supportLines[i].getFirstPrototype().getLocation(),
                                                                                            supportLines[i].getSecondPrototype().getLocation())
                         # compute the loss
-                        losses_j = criterion(outputs.to(DEVICE), labels.to(DEVICE))
+                        losses_j = criterion((outputs + EPSILON).to(DEVICE), labels.to(DEVICE))
                         outerLoopLoss += losses_j.sum().item()
                         predictions_i = torch.argmax(outputs, dim=1).tolist()
                         labels = [labels[i].item() for i in range(labels.shape[0])]
@@ -237,7 +239,7 @@ class ProtoFOMAML(L.LightningModule):
                                                                          model_2.metaLearner.parameters()):
                             if metaParam.requires_grad:
                                 if metaParam.grad is None:
-                                    metaParam.grad = torch.zeros(localParam_1.grad.shape)
+                                    metaParam.grad = torch.zeros(localParam_1.grad.shape).to(DEVICE)
                                 metaParam.grad += localParam_1.grad
                                 metaParam.grad += localParam_2.grad
                         model_1.zero_grad()

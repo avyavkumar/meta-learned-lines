@@ -15,7 +15,7 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         self.bert = BertModel.from_pretrained("bert-base-cased")
         self.hidden = nn.Linear(BERT_DIMS, HIDDEN_MODEL_SIZE)
         self.relu = nn.ReLU()
-        self.tunableLayers = {str(l) for l in range(8, 12)}
+        self.tunableLayers = {str(l) for l in range(10, 12)}
         self.assignTrainableParams()
 
     def assignTrainableParams(self):
