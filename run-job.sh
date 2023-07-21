@@ -4,11 +4,14 @@
 #SBATCH --job-name=meta-learning-lines
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu
-#SBATCH --time=03:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=/scratch/users/%u/logs/%j.out
 
-while getopts ":o:i:l:s:" option; do
+while getopts ":m:o:i:l:s:" option; do
   case $option in
+    m)
+      modelType="$OPTARG"
+      ;;
     o)
       outerLR="$OPTARG"
       ;;
@@ -33,4 +36,4 @@ module --ignore_cache load cuda/11.7.0-gcc-10.3.0
 source /users/${USER}/.bashrc
 source activate /scratch/users/${USER}/conda/meta-learning-lines
 cd /scratch/users/k21036268/meta-learned-lines
-srun python main.py --outerLR $outerLR --innerLR $innerLR --outputLR $outputLR --steps $steps --batchSize 8 --warmupSteps 20 --kShot 8 --kValShot 8 --numTasks 100000
+srun python main.py --model $modelType --outerLR $outerLR --innerLR $innerLR --outputLR $outputLR --steps $steps --batchSize 8 --warmupSteps 20 --kShot 8 --kValShot 8 --numTasks 100000

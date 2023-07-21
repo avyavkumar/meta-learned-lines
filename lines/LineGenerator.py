@@ -19,8 +19,9 @@ class LineGenerator:
         centroids, centroid_labels = get_labelled_centroids(training_encodings, training_labels.tolist())
         k = len(centroid_labels)
         # invoke Ilia's code
+        dims = training_encodings[0].shape[0]
         lines_generated = find_lines_R_multiD(training_encodings.detach().cpu().numpy(), training_labels.tolist(),
-                                              centroids.detach().cpu().numpy(), BERT_DIMS, k - 1)
+                                              centroids.detach().cpu().numpy(), dims, k - 1)
         lines_generated = sorted([sorted(line) for line in lines_generated])
         lines = []
         for i in range(len(lines_generated)):

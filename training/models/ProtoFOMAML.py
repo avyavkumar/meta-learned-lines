@@ -136,6 +136,9 @@ class ProtoFOMAML(L.LightningModule):
             if losses.sum().item() > 0:
                 # calculate the gradients
                 losses.sum().backward()
+                # add gradient clipping for model 1 and model 2
+                torch.nn.utils.clip_grad_norm_(model_1.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model_2.parameters(), 1.0)
                 training_losses.append(losses.sum().item())
                 # multiply the calculated gradients of each model by a scaling factor
                 self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
@@ -334,7 +337,7 @@ class ProtoFOMAML(L.LightningModule):
         torch.set_grad_enabled(False)
         self.log("outer_loop_validation_accuracy", accuracy_score(self.actualLabels, self.predictions),
                  batch_size=len(self.predictions))
-        print("validation accuracy for the validation set is", accuracy_score(self.actualLabels, self.predictions), "\n")
+        print("validation accuracy for the validation set is", accuracy_score(self.actualLabels, self.predictions), "and the loss is", sum(self.losses), "\n")
         self.log("outer_loop_validation_loss", sum(self.losses), batch_size=len(self.predictions))
 
     def training_step(self, batch, batch_idx):

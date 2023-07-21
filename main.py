@@ -2,6 +2,8 @@
 import os
 import random
 from argparse import ArgumentParser
+
+from training.models.ProtoNet import ProtoNet
 from training_datasets.GLUEMetaDataset import GLUEMetaDataset
 from samplers.FewShotEpisodeBatchSampler import FewShotEpisodeBatchSampler
 import torch.utils.data as data
@@ -11,7 +13,39 @@ from training.models.ProtoFOMAML import ProtoFOMAML
 from training.trainer import train_model
 
 
-def main(hyper_params):
+# Example command - python main.py --model ProtoNet --outerLR 5e-5 --innerLR 1e-2 --steps 5 --batchSize 8
+# --warmupSteps 10 --kShot 8 --kValShot 8 --numTasks 200000
+def train_protonet(hyper_params):
+    meta_dataset = GLUEMetaDataset(k=hyper_params.kShot, numTasks=hyper_params.numTasks)
+    train_protomaml_loader = data.DataLoader(
+        meta_dataset,
+        num_workers=2)
+    validation_dataset = ValidationDataset()
+    val_protonet_sampler = FewShotValidationEpisodeBatchSampler(validation_dataset, kShot=hyper_params.kValShot)
+    val_protonet_loader = data.DataLoader(
+        validation_dataset,
+        batch_sampler=val_protonet_sampler,
+        collate_fn=val_protonet_sampler.getCollateFunction(),
+        num_workers=2
+    )
+    # pick a randomised seed
+    seed = random.randint(0, 10000)
+    protonet_model = train_model(
+        ProtoNet,
+        seed=seed,
+        train_loader=train_protomaml_loader,
+        val_loader=val_protonet_sampler,
+        metaLearningRate=hyper_params.outerLR,
+        prototypeLearningRate=hyper_params.innerLR,
+        steps=hyper_params.steps,
+        batchSize=hyper_params.batchSize,
+        warmupSteps=hyper_params.warmupSteps
+    )
+    return protonet_model
+
+# Example command - python main.py --model ProtoFOMAML --outerLR 5e-4 --innerLR 1e-3 --outputLR 1e-2 --steps 5 --batchSize 4
+# --warmupSteps 0 --kShot 4 --kValShot 4 --numTasks 10000
+def train_protomaml(hyper_params):
     meta_dataset = GLUEMetaDataset(k=hyper_params.kShot, numTasks=hyper_params.numTasks)
     train_protomaml_sampler = FewShotEpisodeBatchSampler(meta_dataset, kShot=hyper_params.kShot,
                                                          batchSize=hyper_params.batchSize)
@@ -44,12 +78,10 @@ def main(hyper_params):
     )
     return protomaml_model
 
-# Example command - python main.py --outerLR 5e-4 --innerLR 1e-3 --outputLR 1e-2 --steps 5 --batchSize 4
-# --warmupSteps 0 --kShot 4 --kValShot 4 --numTasks 10000
-
 if __name__ == '__main__':
     root_dir = os.path.dirname(os.path.realpath(__file__))
     parser = ArgumentParser(add_help=False)
+    parser.add_argument('-m', '--model', type=str)
     parser.add_argument('-o', '--outerLR', type=float)
     parser.add_argument('-i', '--innerLR', type=float)
     parser.add_argument('-l', '--outputLR', type=float)
@@ -61,5 +93,7 @@ if __name__ == '__main__':
     parser.add_argument('-n', '--numTasks', type=int)
     hyper_params = parser.parse_args()
 
-    # TRAIN
-    protomaml_model = main(hyper_params)
+    if hyper_params.model == "ProtoFOMAML":
+        train_protomaml(hyper_params)
+    elif hyper_params.model == "ProtoNet":
+        train_protonet(hyper_params)

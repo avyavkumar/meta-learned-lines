@@ -23,8 +23,8 @@ class Line:
             self.firstPrototype = Prototype(self.centroids[0], PrototypeClassifierModel4NN(BERT_DIMS, self.totalClasses))
             self.secondPrototype = Prototype(self.centroids[-1], PrototypeClassifierModel4NN(BERT_DIMS, self.totalClasses))
         elif modelType == CLASSIFIER_MODEL_2NN:
-            self.firstPrototype = Prototype(self.centroids[0], PrototypeClassifierModel2NN(BERT_DIMS, self.totalClasses))
-            self.secondPrototype = Prototype(self.centroids[-1], PrototypeClassifierModel2NN(BERT_DIMS, self.totalClasses))
+            self.firstPrototype = Prototype(self.centroids[0], PrototypeClassifierModel2NN(HIDDEN_MODEL_SIZE, self.totalClasses))
+            self.secondPrototype = Prototype(self.centroids[-1], PrototypeClassifierModel2NN(HIDDEN_MODEL_SIZE, self.totalClasses))
         elif modelType == PROTOTYPE_META_MODEL:
             self.firstPrototype = Prototype(self.centroids[0], PrototypeMetaLinearModel(metaLearner, self.totalClasses))
             self.secondPrototype = Prototype(self.centroids[-1], PrototypeMetaLinearModel(metaLearner, self.totalClasses))

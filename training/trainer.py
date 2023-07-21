@@ -16,11 +16,12 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
         default_root_dir=os.path.join(MODEL_PATH, modelType.__name__),
         accelerator="gpu",
         devices="auto",
-        max_epochs=20000,
-        check_val_every_n_epoch=20,
+        max_epochs=200000,
+        check_val_every_n_epoch=100,
         callbacks=[
-            ModelCheckpoint(save_weights_only=True, mode="max", monitor="outer_loop_validation_accuracy"), LearningRateMonitor("epoch"),
-            EarlyStopping(monitor="outer_loop_validation_accuracy", min_delta=0.01, patience=7, verbose=False, mode="max")
+            ModelCheckpoint(save_weights_only=True, mode="min", monitor="outer_loop_validation_loss"),
+            LearningRateMonitor("epoch"),
+            EarlyStopping(monitor="outer_loop_validation_loss", patience=7, verbose=False, mode="min")
         ],
         enable_progress_bar=False,
     )

@@ -46,7 +46,8 @@ class GLUEMetaDataset(Dataset):
         yield self.getTask()
 
     def __len__(self):
-        return self.getTotalTasks()
+        # we return a default value here as we need to run the validation episode after every few epochs
+        return 100
 
     def __getitem__(self, index):
         return self.getTask()
