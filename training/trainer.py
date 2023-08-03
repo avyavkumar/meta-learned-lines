@@ -21,7 +21,7 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
         callbacks=[
             ModelCheckpoint(save_weights_only=True, mode="min", monitor="outer_loop_validation_loss"),
             LearningRateMonitor("epoch"),
-            EarlyStopping(monitor="outer_loop_validation_loss", patience=7, verbose=False, mode="min")
+            EarlyStopping(monitor="outer_loop_validation_loss", patience=10, verbose=False, mode="min")
         ],
         enable_progress_bar=False,
     )
@@ -32,7 +32,7 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
     if os.path.isfile(existing_model):
         print("Using model", existing_model)
         # Automatically loads the model with the saved hyperparameters
-        model = modelType.load_from_checkpoint(existing_model)
+        model = modelType.load_from_checkpoint(existing_model, **args)
     else:
         model = modelType(**args)
     pl.seed_everything(seed)

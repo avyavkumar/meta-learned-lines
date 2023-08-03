@@ -6,42 +6,47 @@ from torch.utils.data import Dataset
 
 
 class GLUEDataset(Dataset):
-    def __init__(self, datasets: [huggingface_datasets.Dataset], split):
+    def __init__(self, datasets: [huggingface_datasets.Dataset], split, length=-1):
         self.sentences = []
         self.labels = []
         self.classLabelIndices = {}
         totalLabels = 0
         for d_i in range(len(datasets)):
+            values = datasets[d_i][split].num_rows if length == -1 else length
             if 'premise' in datasets[d_i][split][0].keys():
                 premise = datasets[d_i][split]['premise']
                 hypothesis = datasets[d_i][split]['hypothesis']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(premise)):
                     concatenated_sentence = '[CLS] ' + premise[i] + ' [SEP] ' + hypothesis[i] + ' [SEP]'
-                    self.sentences.append(concatenated_sentence)
-                    self.labels.append(labels[i] + totalLabels)
+                    if i < values:
+                        self.sentences.append(concatenated_sentence)
+                        self.labels.append(labels[i] + totalLabels)
             elif 'question1' in datasets[d_i][split][0].keys():
                 question1 = datasets[d_i][split]['question1']
                 question2 = datasets[d_i][split]['question2']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(question1)):
                     concatenated_sentence = '[CLS] ' + question1[i] + ' [SEP] ' + question2[i] + ' [SEP]'
-                    self.sentences.append(concatenated_sentence)
-                    self.labels.append(labels[i] + totalLabels)
+                    if i < values:
+                        self.sentences.append(concatenated_sentence)
+                        self.labels.append(labels[i] + totalLabels)
             elif 'sentence1' in datasets[d_i][split][0].keys():
                 sentence1 = datasets[d_i][split]['sentence1']
                 sentence2 = datasets[d_i][split]['sentence2']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(sentence1)):
                     concatenated_sentence = '[CLS] ' + sentence1[i] + ' [SEP] ' + sentence2[i] + ' [SEP]'
-                    self.sentences.append(concatenated_sentence)
-                    self.labels.append(labels[i] + totalLabels)
+                    if i < values:
+                        self.sentences.append(concatenated_sentence)
+                        self.labels.append(labels[i] + totalLabels)
             else:
                 sentence = datasets[d_i][split]['sentence']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(sentence)):
-                    self.sentences.append('[CLS] ' + sentence[i] + ' [SEP]')
-                    self.labels.append(labels[i] + totalLabels)
+                    if i < values:
+                        self.sentences.append('[CLS] ' + sentence[i] + ' [SEP]')
+                        self.labels.append(labels[i] + totalLabels)
             totalLabels += len(set(datasets[d_i][split]['label']))
         for label_i in range(len(self.labels)):
             if self.labels[label_i] not in self.classLabelIndices:

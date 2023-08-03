@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
-from utils.Constants import HIDDEN_MODEL_SIZE
+from utils.Constants import HIDDEN_MODEL_SIZE, BERT_DIMS
 
 from prototypes.PrototypeModel import PrototypeModel
 
@@ -12,7 +12,7 @@ class PrototypeMetaLinearModel(nn.Module, PrototypeModel):
     def __init__(self, metaLearner: PrototypeMetaModel, classes):
         super(PrototypeMetaLinearModel, self).__init__()
         self.metaLearner = metaLearner
-        self.linear = nn.Linear(HIDDEN_MODEL_SIZE, classes)
+        self.linear = nn.Linear(BERT_DIMS, classes)
         torch.nn.init.xavier_uniform_(self.linear.weight)
 
     def forward(self, inputs):

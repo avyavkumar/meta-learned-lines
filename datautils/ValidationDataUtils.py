@@ -16,7 +16,7 @@ def get_categories_sentiment():
     return categories
 
 
-def get_labelled_validation_sentences(path, category, balance_and_subsample=False):
+def get_labelled_validation_sentences(path, category, balance_and_subsample=True):
     sentences = []
     labels = []
     label_keys = {}

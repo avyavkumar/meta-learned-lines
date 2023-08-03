@@ -3,7 +3,7 @@ from validation_datasets.ValidationDataset import ValidationDataset
 
 
 class FewShotValidationEpisodeBatchSampler:
-    def __init__(self, dataset: ValidationDataset, kShot, totalBatches=50):
+    def __init__(self, dataset: ValidationDataset, kShot, totalBatches=1):
         super().__init__()
         self.kShot = kShot * 2
         self.dataset = dataset

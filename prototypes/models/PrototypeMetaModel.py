@@ -13,13 +13,14 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         super(PrototypeMetaModel, self).__init__()
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
         self.bert = BertModel.from_pretrained("bert-base-cased")
-        self.hidden = nn.Linear(BERT_DIMS, HIDDEN_MODEL_SIZE)
-        self.relu = nn.ReLU()
-        self.tunableLayers = {str(l) for l in range(12, 12)}
+        # self.hidden = nn.Linear(BERT_DIMS, HIDDEN_MODEL_SIZE)
+        # self.relu = nn.ReLU()
+        # self.dropout = nn.Dropout(p=0.1)
+        self.tunableLayers = {str(l) for l in range(10, 12)}
         self.assignTrainableParams()
 
     def assignTrainableParams(self):
-        # freeze the first 8 layers of BERT
+        # freeze the first n tunable layers of BERT
         for name, param in self.bert.named_parameters():
             if not set.intersection(set(name.split('.')), self.tunableLayers):
                 param.requires_grad = False
@@ -28,10 +29,11 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         tokenized_inputs = self.tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).to(ModelUtils.DEVICE)
         outputs = self.bert(**tokenized_inputs)
         encoding = outputs.last_hidden_state[:, 0, :]
-        hidden_output = self.hidden(encoding)
-        output = self.relu(hidden_output)
+        # dropout = self.dropout(encoding)
+        # hidden_output = self.hidden(dropout)
+        # output = self.relu(hidden_output)
         del tokenized_inputs
-        return output
+        return encoding
 
     def getEncoder(self):
         return "BERT"
@@ -40,5 +42,5 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         for name, param in self.bert.named_parameters():
             if set.intersection(set(name.split('.')), self.tunableLayers):
                 param.grad = param.grad * scalingFactor
-        self.hidden.weight.grad = self.hidden.weight.grad * scalingFactor
-        self.hidden.bias.grad = self.hidden.bias.grad * scalingFactor
+        # self.hidden.weight.grad = self.hidden.weight.grad * scalingFactor
+        # self.hidden.bias.grad = self.hidden.bias.grad * scalingFactor

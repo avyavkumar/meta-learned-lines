@@ -11,6 +11,7 @@ class FewShotEpisodeBatchSampler:
 
     def __iter__(self):
         episodeBatch = []
+        self.dataset.changeRandomIndex()
         for episode_i in range(self.batchSize):
             episode = next(iter(self.dataset))
             _, labels = episode
