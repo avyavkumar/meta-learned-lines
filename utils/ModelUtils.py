@@ -13,4 +13,4 @@ def get_prototypes(inputs, labels):
     for label in unique_labels:
         prototypes.append(inputs[torch.where(labels == label)[0]].mean(dim=0))
     prototypes = torch.stack(prototypes, dim=0)
-    return prototypes, unique_labels
+    return prototypes.to(DEVICE), unique_labels.to(DEVICE)

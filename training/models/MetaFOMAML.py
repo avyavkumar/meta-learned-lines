@@ -27,12 +27,10 @@ from utils.ModelUtils import DEVICE, CPU_DEVICE
 # TODO load model from checkpoint and check if everything works as expected
 # TODO write code for distributed hyper param checking
 
-class Reptile(L.LightningModule):
+class MetaFOMAML(L.LightningModule):
 
     def __init__(self, outerLR, innerLR, outputLR, steps, batchSize, warmupSteps):
         super().__init__()
-        self.trainingTaskName = None
-        self.metaDataset = None
         self.predictions = []
         self.actualLabels = []
         self.losses = []
@@ -41,7 +39,7 @@ class Reptile(L.LightningModule):
         self.automatic_optimization = False
         self.metaLearner = PrototypeMetaModel()
         torch.set_printoptions(threshold=100)
-        print("Training Reptile with parameters", self.hparams)
+        print("Training MetaFOMAML with parameters", self.hparams)
 
     def filterEncodingsByLabels(self, labels, training_data, training_labels):
         filteredTrainingData = []
@@ -54,7 +52,7 @@ class Reptile(L.LightningModule):
 
     def configure_optimizers(self):
         optimiser = AdamW(self.metaLearner.parameters(), lr=self.hparams.outerLR)
-        return {"optimizer": optimiser, "lr_scheduler": {"scheduler": MultiStepLR(optimizer=optimiser, milestones=[100000], gamma=0.33, verbose=True)}}
+        return {"optimizer": optimiser, "lr_scheduler": {"scheduler": MultiStepLR(optimizer=optimiser, milestones=[130], gamma=0.33, verbose=True)}}
 
     def updateGradients(self, losses, model_1, model_2, distances_1, distances_2):
         losses_1 = losses.clone().detach().cpu()
@@ -69,11 +67,8 @@ class Reptile(L.LightningModule):
     def getCriterion(self):
         return nn.CrossEntropyLoss(reduction='none')
 
-    def getInnerLoopOptimiser(self, model, classes):
-        if classes == 2:
-            return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': 1e-2}], lr=1e-2)
-        else:
-            return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
+    def getInnerLoopOptimiser(self, model):
+        return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
 
     def getInnerLoopScheduler(self, optimiser):
         return get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=self.hparams.steps // 5)
@@ -140,7 +135,10 @@ class Reptile(L.LightningModule):
                 optimiser_1.zero_grad()
                 optimiser_2.zero_grad()
             del outputs, distances_1, distances_2
+
         print("inner loop training loss is", sum(training_losses), "and accuracy is", accuracy_score(correctLabels, predictions))
+        self.log("inner_loop_training_loss", sum(training_losses), batch_size=len(training_losses))
+        self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions), batch_size=len(predictions))
 
     def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels, train=True):
         # create models for inner loop updates
@@ -149,10 +147,9 @@ class Reptile(L.LightningModule):
         # add these models to the GPU if there is a GPU
         innerLoopModel_1.to(ModelUtils.DEVICE)
         innerLoopModel_2.to(ModelUtils.DEVICE)
-        classes = len(set(supportLabels))
         # get optimisers
-        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1, classes)
-        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2, classes)
+        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1)
+        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2)
         scheduler_1 = self.getInnerLoopScheduler(optimiser_1)
         scheduler_2 = self.getInnerLoopScheduler(optimiser_2)
         optimisers = (optimiser_1, optimiser_2, scheduler_1, scheduler_2)
@@ -228,8 +225,8 @@ class Reptile(L.LightningModule):
                             if metaParam.requires_grad:
                                 if metaParam.grad is None:
                                     metaParam.grad = torch.zeros(localParam_1.grad.shape).to(DEVICE)
-                                metaParam.grad += metaParam - localParam_1
-                                metaParam.grad += metaParam - localParam_2
+                                metaParam.grad += localParam_1.grad
+                                metaParam.grad += localParam_2.grad
 
                         model_1.zero_grad()
                         model_2.zero_grad()
@@ -284,11 +281,7 @@ class Reptile(L.LightningModule):
             self.runOuterLoop(supportLines, supportEncodings, supportLabels, querySet, queryEncodings, queryLabels, train)
             del supportLines, supportEncodings, queryEncodings
         if train:
-            print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses).item(), "for task", self.trainingTaskName)
-            # normalise the loss
-            for metaParam in self.metaLearner.parameters():
-                if metaParam.requires_grad:
-                    metaParam.grad = metaParam.grad / len(batch[0])
+            print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses).item())
             # update the soft label model
             self.optimizers().step()
             self.lr_schedulers().step()
@@ -360,14 +353,11 @@ class Reptile(L.LightningModule):
         # zero the meta learning gradients
         self.resetMetrics()
         self.optimizers().zero_grad()
-        self.trainingTaskName = batch[2]
-        print("Running", self.trainingTaskName + "...")
         self.runMetaWorkflow(batch)
-        self.log("outer_loop_training_accuracy_" + self.trainingTaskName, accuracy_score(self.actualLabels, self.predictions))
-        self.log("outer_loop_training_loss_" + self.trainingTaskName, sum(self.losses).item())
+        self.log("outer_loop_training_accuracy", accuracy_score(self.actualLabels, self.predictions))
+        self.log("outer_loop_training_loss", sum(self.losses).item())
         print("\n")
         torch.cuda.empty_cache()
-        self.trainingTaskName = None
         return None
 
     def resetMetrics(self):

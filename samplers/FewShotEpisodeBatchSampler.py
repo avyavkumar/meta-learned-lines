@@ -45,5 +45,5 @@ class FewShotEpisodeBatchSampler:
                 batchedData.append(data)
                 batchedLabels.append(labels)
                 idx += 1
-            return batchedData, batchedLabels
+            return batchedData, batchedLabels, self.dataset.getCurrentTask()
         return collate

@@ -1,24 +1,24 @@
 import random
 from copy import deepcopy
-
-import numpy as np
-import pytorch_lightning as L
 import torch
+import numpy as np
 import torch.nn as nn
 from sklearn.metrics import accuracy_score
-from torch.optim import AdamW
 from torch.optim import SGD
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import MultiStepLR
-from torch.utils.data import DataLoader
 from transformers import get_constant_schedule_with_warmup
-
 from lines.Line import Line
-from lines.LineGenerator import LineGenerator
 from lines.lo_shot_utils import dist_to_line_multiD
-from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
+from prototypes.models.PrototypeEmbeddingMetaModel import PrototypeEmbeddingMetaModel
+from prototypes.models.SoftLabelMetaModel import SoftLabelMetaModel
+from prototypes.models.SoftLabelPrototypeMetaModel import SoftLabelPrototypeMetaModel
 from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
 from utils import ModelUtils
 from utils.Constants import PROTOTYPE_META_MODEL
+from lines.LineGenerator import LineGenerator
+from torch.utils.data import DataLoader
+import pytorch_lightning as L
 from utils.ModelUtils import DEVICE, CPU_DEVICE
 
 
@@ -27,21 +27,22 @@ from utils.ModelUtils import DEVICE, CPU_DEVICE
 # TODO load model from checkpoint and check if everything works as expected
 # TODO write code for distributed hyper param checking
 
-class Reptile(L.LightningModule):
+class TunableFOMAML(L.LightningModule):
 
-    def __init__(self, outerLR, innerLR, outputLR, steps, batchSize, warmupSteps):
+    def __init__(self, softLabelLR, embedderLR, innerLR, outputLR, steps, batchSize, warmupSteps):
         super().__init__()
-        self.trainingTaskName = None
-        self.metaDataset = None
         self.predictions = []
         self.actualLabels = []
         self.losses = []
         self.save_hyperparameters()
         self.val_episode = 0
         self.automatic_optimization = False
-        self.metaLearner = PrototypeMetaModel()
+        self.softLabelMetaModel = SoftLabelMetaModel()
+        self.prototypeEmbeddingModel = PrototypeEmbeddingMetaModel()
+        self.embedderOptimiser = self.getEmbeddingOptimiser(self.prototypeEmbeddingModel)
+        self.embedderLRScheduler = self.getEmbedderLRScheduler(self.embedderOptimiser)
         torch.set_printoptions(threshold=100)
-        print("Training Reptile with parameters", self.hparams)
+        print("Training TunableFOMAML with parameters", self.hparams)
 
     def filterEncodingsByLabels(self, labels, training_data, training_labels):
         filteredTrainingData = []
@@ -53,8 +54,14 @@ class Reptile(L.LightningModule):
         return torch.Tensor(np.array(filteredTrainingData)), np.array(filteredTrainingLabels)
 
     def configure_optimizers(self):
-        optimiser = AdamW(self.metaLearner.parameters(), lr=self.hparams.outerLR)
-        return {"optimizer": optimiser, "lr_scheduler": {"scheduler": MultiStepLR(optimizer=optimiser, milestones=[100000], gamma=0.33, verbose=True)}}
+        optimiser = AdamW(self.softLabelMetaModel.parameters(), lr=self.hparams.softLabelLR)
+        return {
+            "optimizer": optimiser,
+            "lr_scheduler": {
+                "scheduler": MultiStepLR(optimizer=optimiser, milestones=[200], gamma=0.1, verbose=True)
+                # get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=self.hparams.warmupSteps)
+            }
+        }
 
     def updateGradients(self, losses, model_1, model_2, distances_1, distances_2):
         losses_1 = losses.clone().detach().cpu()
@@ -69,18 +76,26 @@ class Reptile(L.LightningModule):
     def getCriterion(self):
         return nn.CrossEntropyLoss(reduction='none')
 
-    def getInnerLoopOptimiser(self, model, classes):
-        if classes == 2:
-            return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': 1e-2}], lr=1e-2)
-        else:
-            return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
+    def getEmbeddingOptimiser(self, model):
+        return AdamW(model.parameters(), lr=self.hparams.embedderLR)
+
+    def getEmbedderLRScheduler(self, optimiser):
+        return get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=100)
+
+    def getInnerLoopOptimiser(self, model):
+        return SGD([{'params': model.metaLearner.hidden.parameters()},
+                    {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
 
     def getInnerLoopScheduler(self, optimiser):
         return get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=self.hparams.steps // 5)
 
-    def computeLabelsAndDistances(self, inputs, encodings, model_1, model_2, location_1, location_2):
-        output_1 = model_1(inputs).to(CPU_DEVICE)
-        output_2 = model_2(inputs).to(CPU_DEVICE)
+    def computeLabelsAndDistances(self, inputs, encodings, model_1, model_2, location_1, location_2, outerLoop=False):
+        if outerLoop:
+            output_1 = model_1(inputs).to(CPU_DEVICE)
+            output_2 = model_2(inputs).to(CPU_DEVICE)
+        else:
+            output_1 = model_1(encodings.to(DEVICE)).to(CPU_DEVICE)
+            output_2 = model_2(encodings.to(DEVICE)).to(CPU_DEVICE)
         # get distances from the prototypes for all inputs
         distances_1 = []
         distances_2 = []
@@ -105,8 +120,11 @@ class Reptile(L.LightningModule):
                 filteredTrainingLabels.append(training_labels[i])
         return filteredTrainingSentences, np.array(filteredTrainingLabels)
 
-    def runInnerLoopTrainingStep(self, line, model_1, model_2, optimisers, filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels, train):
-        trainingParams = {'batch_size': 32}
+    def runInnerLoopTrainingStep(self, line, model_1, model_2, optimisers, filteredTrainingSentences, filteredTrainingEncodings,
+                                 filteredTrainingLabels, train):
+        trainingParams = {
+            'batch_size': 32
+        }
         trainingDataset = SentenceEncodingDataset(filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels)
         trainLoader = torch.utils.data.DataLoader(trainingDataset, **trainingParams)
         predictions = []
@@ -119,7 +137,9 @@ class Reptile(L.LightningModule):
         for i, data in enumerate(trainLoader, 0):
             # get the inputs; data is a list of [inputs, encodings, labels]
             inputs, encodings, labels = data
-            outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2, line.getFirstPrototype().getLocation(), line.getSecondPrototype().getLocation())
+            outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
+                                                                               line.getFirstPrototype().getLocation(),
+                                                                               line.getSecondPrototype().getLocation())
             # compute the loss
             losses = criterion(outputs, labels)
             predictions_i = torch.argmax(outputs, dim=1).tolist()
@@ -141,6 +161,8 @@ class Reptile(L.LightningModule):
                 optimiser_2.zero_grad()
             del outputs, distances_1, distances_2
         print("inner loop training loss is", sum(training_losses), "and accuracy is", accuracy_score(correctLabels, predictions))
+        self.log("inner_loop_training_loss", sum(training_losses), batch_size=len(training_losses))
+        self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions), batch_size=len(predictions))
 
     def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels, train=True):
         # create models for inner loop updates
@@ -149,22 +171,26 @@ class Reptile(L.LightningModule):
         # add these models to the GPU if there is a GPU
         innerLoopModel_1.to(ModelUtils.DEVICE)
         innerLoopModel_2.to(ModelUtils.DEVICE)
-        classes = len(set(supportLabels))
         # get optimisers
-        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1, classes)
-        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2, classes)
+        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1)
+        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2)
         scheduler_1 = self.getInnerLoopScheduler(optimiser_1)
         scheduler_2 = self.getInnerLoopScheduler(optimiser_2)
         optimisers = (optimiser_1, optimiser_2, scheduler_1, scheduler_2)
         # filter support encodings and labels to ensure that only line-specific data is used for training
-        filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), supportSet, supportLabels)
-        filteredTrainingEncodings, filteredTrainingLabels_2 = self.filterEncodingsByLabels(line.getLabels(), supportEncodings, supportLabels)
+        filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), supportSet,
+                                                                                           supportLabels)
+        filteredTrainingEncodings, filteredTrainingLabels_2 = self.filterEncodingsByLabels(line.getLabels(),
+                                                                                           supportEncodings,
+                                                                                           supportLabels)
         # sanity check to ensure that the filtered data is in the correct order
-        assert torch.all(torch.eq(torch.tensor(filteredTrainingLabels_1, dtype=torch.int8), torch.tensor(filteredTrainingLabels_2, dtype=torch.int8))) == torch.tensor(True)
+        assert torch.all(torch.eq(torch.tensor(filteredTrainingLabels_1, dtype=torch.int8),
+                                  torch.tensor(filteredTrainingLabels_2, dtype=torch.int8))) == torch.tensor(True)
 
         # use SGD to carry out few-shot adaptation
         for _ in range(self.hparams.steps):
-            self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, optimisers, filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels_2, train)
+            self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, optimisers, filteredTrainingSentences,
+                                          filteredTrainingEncodings, filteredTrainingLabels_2, train)
 
         # delete everything to free the memory
         del filteredTrainingEncodings
@@ -174,13 +200,15 @@ class Reptile(L.LightningModule):
         line.getFirstPrototype().setPrototypeModel(innerLoopModel_1)
         line.getSecondPrototype().setPrototypeModel(innerLoopModel_2)
 
-    def runOuterLoop(self, supportLines, supportEncodings, supportLabels, querySentences, queryEncodings, queryLabels, train=True):
+    def runOuterLoop(self, supportLines, querySentences, queryEncodings, queryLabels, train=True):
         assignments = []
         outerLoopLoss = 0.0
         outerLoopPredictions = []
         outerLoopLabels = []
         for point in queryEncodings:
-            dists = [dist_to_line_multiD(point.detach().cpu().numpy(), line.getFirstPrototype().getLocation().detach().cpu().numpy(), line.getSecondPrototype().getLocation().detach().cpu().numpy()) for line in supportLines]
+            dists = [
+                dist_to_line_multiD(point.detach().cpu().numpy(), line.getFirstPrototype().getLocation().detach().cpu().numpy(),
+                                    line.getSecondPrototype().getLocation().detach().cpu().numpy()) for line in supportLines]
             nearest = np.argmin(dists)
             assignments.append(nearest)
         for i in range(len(supportLines)):
@@ -189,57 +217,93 @@ class Reptile(L.LightningModule):
             requiredQueryEncodings = torch.from_numpy(requiredQueryEncodings)
             if requiredQueryEncodings.shape[0] > 0:
                 requiredQueryLabels = [int(queryLabels[x].item()) for x in range((len(assignments))) if assignments[x] == i]
-                trainingParams = {'batch_size': 32}
+                trainingParams = {
+                    'batch_size': 32
+                }
                 trainingDataset = SentenceEncodingDataset(requiredQuerySentences, requiredQueryEncodings, requiredQueryLabels)
                 trainLoader = torch.utils.data.DataLoader(trainingDataset, **trainingParams)
                 criterion = self.getCriterion()
-                model_1 = supportLines[i].getFirstPrototype().getPrototypeModel()
-                model_2 = supportLines[i].getSecondPrototype().getPrototypeModel()
+                model_1 = SoftLabelPrototypeMetaModel(prototypeEmbeddingMetaModel=self.prototypeEmbeddingModel,
+                                                      softLabelMetaModel=supportLines[i].getFirstPrototype().getPrototypeModel())
+                model_2 = SoftLabelPrototypeMetaModel(prototypeEmbeddingMetaModel=self.prototypeEmbeddingModel,
+                                                      softLabelMetaModel=supportLines[i].getSecondPrototype().getPrototypeModel())
                 # put these models on the GPU
                 model_1.to(DEVICE)
                 model_2.to(DEVICE)
                 for j, data in enumerate(trainLoader, 0):
                     if train:
-                        # printed = False
+                        printed = False
                         # print("soft label grads were")
                         # for metaParam in self.softLabelMetaModel.parameters():
                         #     if metaParam.requires_grad and not printed:
                         #         print(metaParam.grad)
                         #         printed = True
                         # get the inputs; data is a list of [inputs, encodings, labels]
-                        sentences, encodings, labels = data
-                        outputs, distances_1, distances_2 = self.computeLabelsAndDistances(sentences, encodings, model_1, model_2, supportLines[i].getFirstPrototype().getLocation(), supportLines[i].getSecondPrototype().getLocation())
+                        inputs, encodings, labels = data
+                        outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
+                                                                                           supportLines[i].getFirstPrototype().getLocation(),
+                                                                                           supportLines[i].getSecondPrototype().getLocation(),
+                                                                                           outerLoop=True)
                         # compute the loss
                         losses_j = criterion(outputs.to(DEVICE), labels.to(DEVICE))
                         outerLoopLoss += losses_j.sum().item()
                         predictions_i = torch.argmax(outputs, dim=1).tolist()
-                        labelsList = [labels[i].item() for i in range(labels.shape[0])]
+                        labels = [labels[i].item() for i in range(labels.shape[0])]
                         outerLoopPredictions.extend(predictions_i)
-                        outerLoopLabels.extend(labelsList)
+                        outerLoopLabels.extend(labels)
                         self.predictions.extend(predictions_i)
-                        self.actualLabels.extend(labelsList)
+                        self.actualLabels.extend(labels)
                         self.losses.extend(losses_j)
                         # calculate the gradients
                         self.manual_backward(losses_j.sum())
                         # multiply the calculated gradients of each model by a scaling factor
                         self.updateGradients(losses_j, model_1, model_2, distances_1, distances_2)
                         # in first order approximation, the gradients are the sum of the inner and outer loop models
-                        for metaParam, localParam_1, localParam_2 in zip(self.metaLearner.parameters(), model_1.metaLearner.parameters(), model_2.metaLearner.parameters()):
+                        for metaParam, localParam_1, localParam_2 in zip(self.softLabelMetaModel.parameters(),
+                                                                         model_1.softLabelMetaModel.parameters(),
+                                                                         model_2.softLabelMetaModel.parameters()):
                             if metaParam.requires_grad:
                                 if metaParam.grad is None:
                                     metaParam.grad = torch.zeros(localParam_1.grad.shape).to(DEVICE)
-                                metaParam.grad += metaParam - localParam_1
-                                metaParam.grad += metaParam - localParam_2
-
-                        model_1.zero_grad()
-                        model_2.zero_grad()
-
+                                metaParam.grad += localParam_1.grad
+                                metaParam.grad += localParam_2.grad
+                        model_1.softLabelMetaModel.zero_grad()
+                        model_2.softLabelMetaModel.zero_grad()
+                        # print("soft label grads are")
+                        # for metaParam in self.softLabelMetaModel.parameters():
+                        #     if metaParam.requires_grad:
+                        #         print(metaParam.grad)
+                        # # propagate the loss backward through the embedding model
+                        # printed = False
+                        # print("Printing params")
+                        # for name, param in self.prototypeEmbeddingModel.named_parameters():
+                        #     if param.requires_grad and not printed:
+                        #         print(name, param)
+                        #         printed = True
+                        # print("Printing grads now")
+                        # printed = False
+                        # for name, param in self.prototypeEmbeddingModel.named_parameters():
+                        #     if param.requires_grad and not printed:
+                        #         print(name, param.grad)
+                        #         printed = True
+                        self.embedderOptimiser.step()
+                        self.embedderLRScheduler.step()
+                        self.embedderOptimiser.zero_grad()
+                        # printed = False
+                        # print("updated weights are")
+                        # for name, param in self.prototypeEmbeddingModel.named_parameters():
+                        #     if param.requires_grad and not printed:
+                        #         print(name, param)
+                        #         printed = True
                         # delete the unnecessary objects
-                        del losses_j, outputs, distances_1, distances_2
+                        del losses_j, outputs, labels, distances_1, distances_2
                     else:
                         with torch.no_grad():
-                            sentences, encodings, labels = data
-                            outputs, _, _ = self.computeLabelsAndDistances(sentences, encodings, model_1, model_2, supportLines[i].getFirstPrototype().getLocation(), supportLines[i].getSecondPrototype().getLocation())
+                            inputs, encodings, labels = data
+                            outputs, _, _ = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
+                                                                           supportLines[i].getFirstPrototype().getLocation(),
+                                                                           supportLines[i].getSecondPrototype().getLocation(),
+                                                                           outerLoop=True)
                             # compute the loss
                             losses_j = criterion(outputs.to(DEVICE), labels.to(DEVICE))
                             outerLoopLoss += losses_j.sum().item()
@@ -247,10 +311,9 @@ class Reptile(L.LightningModule):
                             labels = [labels[i].item() for i in range(labels.shape[0])]
                             outerLoopPredictions.extend(predictions_i)
                             outerLoopLabels.extend(labels)
-
                             self.predictions.extend(predictions_i)
                             self.actualLabels.extend(labels)
-                            self.losses.append(outerLoopLoss)
+                            self.losses.extend(losses_j)
         if train:
             print("outer loop training accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions), "and loss is", outerLoopLoss)
         else:
@@ -258,7 +321,7 @@ class Reptile(L.LightningModule):
             self.log("outer_loop_validation_loss_" + str(self.val_episode), outerLoopLoss, batch_size=len(outerLoopLabels))
             self.log("outer_loop_validation_accuracy_" + str(self.val_episode), accuracy_score(outerLoopLabels, outerLoopPredictions), batch_size=len(outerLoopLabels))
             self.val_episode += 1
-            self.val_episode %= 8  # since we have 8 episodes in a validation set
+            self.val_episode %= 8 # since we have 8 episodes in a validation set
 
     def runMetaWorkflow(self, batch, train=True):
         for episode_i in range(len(batch[0])):
@@ -281,15 +344,10 @@ class Reptile(L.LightningModule):
                 # perform few-shot adaptation on the support set
                 self.trainInnerLoop(supportLine, supportSet, supportEncodings, supportLabels, train)
             # calculate the loss on the query set
-            self.runOuterLoop(supportLines, supportEncodings, supportLabels, querySet, queryEncodings, queryLabels, train)
+            self.runOuterLoop(supportLines, querySet, queryEncodings, queryLabels, train)
             del supportLines, supportEncodings, queryEncodings
         if train:
-            print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses).item(), "for task", self.trainingTaskName)
-            # normalise the loss
-            for metaParam in self.metaLearner.parameters():
-                if metaParam.requires_grad:
-                    metaParam.grad = metaParam.grad / len(batch[0])
-            # update the soft label model
+            print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses).item())
             self.optimizers().step()
             self.lr_schedulers().step()
             self.optimizers().zero_grad()
@@ -332,18 +390,17 @@ class Reptile(L.LightningModule):
         # invoke line generator and compute lines per episode
         trainingSet = {'encodings': trainingEncodings, 'labels': trainingLabels}
         lineGenerator = LineGenerator(trainingSet, PROTOTYPE_META_MODEL)
-        lines = lineGenerator.generateLines(self.metaLearner)
+        lines = lineGenerator.generateLines(self.softLabelMetaModel)
         return trainingEncodings, lines
 
     def getFewShotEncodings(self, data, labels):
-        with torch.no_grad():
-            training_encodings = []
-            training_labels = labels
-            for i in range(len(training_labels)):
-                encoding = self.metaLearner(data[i]).cpu().detach().reshape(-1)
-                training_encodings.append(encoding)
-                del encoding
-            return torch.stack(training_encodings, dim=0), torch.Tensor(training_labels)
+        training_encodings = []
+        training_labels = labels
+        for i in range(len(training_labels)):
+            encoding = self.prototypeEmbeddingModel(data[i]).cpu().detach().reshape(-1)
+            training_encodings.append(encoding)
+            del encoding
+        return torch.stack(training_encodings, dim=0), torch.Tensor(training_labels)
 
     def validation_step(self, batch, batch_idx):
         self.resetMetrics()
@@ -352,7 +409,7 @@ class Reptile(L.LightningModule):
         torch.set_grad_enabled(False)
         self.log("outer_loop_validation_accuracy", accuracy_score(self.actualLabels, self.predictions), batch_size=len(self.predictions))
         print("validation accuracy for the validation set is", accuracy_score(self.actualLabels, self.predictions), "and the loss is", sum(self.losses), "\n")
-        self.log("outer_loop_validation_loss", sum(self.losses), batch_size=len(self.predictions))
+        self.log("outer_loop_validation_loss", sum(self.losses).item(), batch_size=len(self.predictions))
         torch.cuda.empty_cache()
         return None
 
@@ -360,17 +417,15 @@ class Reptile(L.LightningModule):
         # zero the meta learning gradients
         self.resetMetrics()
         self.optimizers().zero_grad()
-        self.trainingTaskName = batch[2]
-        print("Running", self.trainingTaskName + "...")
         self.runMetaWorkflow(batch)
-        self.log("outer_loop_training_accuracy_" + self.trainingTaskName, accuracy_score(self.actualLabels, self.predictions))
-        self.log("outer_loop_training_loss_" + self.trainingTaskName, sum(self.losses).item())
+        self.log("outer_loop_training_accuracy", accuracy_score(self.actualLabels, self.predictions))
+        self.log("outer_loop_training_loss", sum(self.losses).item())
         print("\n")
         torch.cuda.empty_cache()
-        self.trainingTaskName = None
         return None
 
     def resetMetrics(self):
         self.actualLabels = []
         self.losses = []
         self.predictions = []
+

@@ -1,4 +1,5 @@
 import random
+from collections import Counter
 
 import datasets as huggingface_datasets
 import torch
@@ -12,41 +13,36 @@ class GLUEDataset(Dataset):
         self.classLabelIndices = {}
         totalLabels = 0
         for d_i in range(len(datasets)):
-            values = datasets[d_i][split].num_rows if length == -1 else length
             if 'premise' in datasets[d_i][split][0].keys():
                 premise = datasets[d_i][split]['premise']
                 hypothesis = datasets[d_i][split]['hypothesis']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(premise)):
                     concatenated_sentence = '[CLS] ' + premise[i] + ' [SEP] ' + hypothesis[i] + ' [SEP]'
-                    if i < values:
-                        self.sentences.append(concatenated_sentence)
-                        self.labels.append(labels[i] + totalLabels)
+                    self.sentences.append(concatenated_sentence)
+                    self.labels.append(labels[i] + totalLabels)
             elif 'question1' in datasets[d_i][split][0].keys():
                 question1 = datasets[d_i][split]['question1']
                 question2 = datasets[d_i][split]['question2']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(question1)):
                     concatenated_sentence = '[CLS] ' + question1[i] + ' [SEP] ' + question2[i] + ' [SEP]'
-                    if i < values:
-                        self.sentences.append(concatenated_sentence)
-                        self.labels.append(labels[i] + totalLabels)
+                    self.sentences.append(concatenated_sentence)
+                    self.labels.append(labels[i] + totalLabels)
             elif 'sentence1' in datasets[d_i][split][0].keys():
                 sentence1 = datasets[d_i][split]['sentence1']
                 sentence2 = datasets[d_i][split]['sentence2']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(sentence1)):
                     concatenated_sentence = '[CLS] ' + sentence1[i] + ' [SEP] ' + sentence2[i] + ' [SEP]'
-                    if i < values:
-                        self.sentences.append(concatenated_sentence)
-                        self.labels.append(labels[i] + totalLabels)
+                    self.sentences.append(concatenated_sentence)
+                    self.labels.append(labels[i] + totalLabels)
             else:
                 sentence = datasets[d_i][split]['sentence']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(sentence)):
-                    if i < values:
-                        self.sentences.append('[CLS] ' + sentence[i] + ' [SEP]')
-                        self.labels.append(labels[i] + totalLabels)
+                    self.sentences.append('[CLS] ' + sentence[i] + ' [SEP]')
+                    self.labels.append(labels[i] + totalLabels)
             totalLabels += len(set(datasets[d_i][split]['label']))
         for label_i in range(len(self.labels)):
             if self.labels[label_i] not in self.classLabelIndices:
@@ -54,6 +50,46 @@ class GLUEDataset(Dataset):
                 self.classLabelIndices[self.labels[label_i]].append(label_i)
             else:
                 self.classLabelIndices[self.labels[label_i]].append(label_i)
+        print(Counter(self.labels))
+        self.balanceDataset()
+        if length != -1:
+            self.truncateDataset(length)
+        print(Counter(self.labels))
+
+    def truncateDataset(self, length):
+        totalClasses = len(set(self.labels))
+        totalValues = min(length, len(self.labels) // totalClasses)
+        truncatedData = []
+        truncatedLabels = []
+        labelCount = {}
+        for i in set(self.labels):
+            labelCount[i] = 0
+        for i in range(len(self.labels)):
+            if labelCount[self.labels[i]] < totalValues:
+                truncatedData.append(self.sentences[i])
+                truncatedLabels.append((self.labels[i]))
+                labelCount[self.labels[i]] += 1
+        self.sentences = truncatedData
+        self.labels = truncatedLabels
+
+    def balanceDataset(self):
+        counterLabels = Counter(self.labels)
+        _, values = min(counterLabels.items(), key=lambda x: x[1])
+        _, maxValues = max(counterLabels.items(), key=lambda x: x[1])
+        if 0.9 < values / maxValues:
+            return
+        balancedData = []
+        balancedLabels = []
+        labelCount = {}
+        for i in set(self.labels):
+            labelCount[i] = 0
+        for i in range(len(self.labels)):
+            if labelCount[self.labels[i]] < values:
+                balancedData.append(self.sentences[i])
+                balancedLabels.append((self.labels[i]))
+                labelCount[self.labels[i]] += 1
+        self.sentences = balancedData
+        self.labels = balancedLabels
 
     def __len__(self):
         """Denotes the total number of samples"""

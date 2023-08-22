@@ -46,7 +46,7 @@ def get_labelled_test_sentences(category):
                 label = data[index]['label']
                 sentences.append(processed_sentence)
                 labels.append(label)
-    return sentences[:5], labels[:5]
+    return sentences, labels
 
 def get_labelled_validation_sentences(category):
     sentences = []

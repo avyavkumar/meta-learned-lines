@@ -1,8 +1,9 @@
+import torch
+
 from lines.Line import Line
 import numpy as np
 
 from datautils.LEOPARDEncoderUtils import get_labelled_centroids
-from utils.Constants import BERT_DIMS
 from lines.lo_shot_utils import find_lines_R_multiD
 
 
@@ -20,9 +21,7 @@ class LineGenerator:
         k = len(centroid_labels)
         # invoke Ilia's code
         dims = training_encodings[0].shape[0]
-        lines_generated = find_lines_R_multiD(training_encodings.detach().cpu().numpy(), training_labels.tolist(),
-                                              centroids.detach().cpu().numpy(), dims, k - 1)
-        lines_generated = sorted([sorted(line) for line in lines_generated])
+        lines_generated = find_lines_R_multiD(training_encodings.detach().cpu().numpy(), training_labels.tolist(), centroids.detach().cpu().numpy(), dims, k - 1)
         lines = []
         for i in range(len(lines_generated)):
             centroids_required = []
@@ -30,7 +29,5 @@ class LineGenerator:
             for j in lines_generated[i]:
                 centroids_required.append(centroids[j])
                 centroid_labels_required.append(centroid_labels[j])
-            lines.append(Line(total_classes, centroids_required, np.array(centroid_labels_required), self.modelType,
-                              metaLearner=metaLearner))
-
+            lines.append(Line(total_classes, torch.stack(centroids_required, dim=0), np.array(centroid_labels_required), self.modelType, metaLearner=metaLearner))
         return lines

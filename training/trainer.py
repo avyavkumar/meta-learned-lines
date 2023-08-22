@@ -17,11 +17,11 @@ def train_model(modelType, train_loader, val_loader, seed=42, **args):
         accelerator="gpu",
         devices="auto",
         max_epochs=200000,
-        check_val_every_n_epoch=100,
+        check_val_every_n_epoch=5,
         callbacks=[
-            ModelCheckpoint(save_weights_only=True, mode="min", monitor="outer_loop_validation_loss"),
+            ModelCheckpoint(save_weights_only=True, mode="max", monitor="outer_loop_validation_accuracy"),
             LearningRateMonitor("epoch"),
-            EarlyStopping(monitor="outer_loop_validation_loss", patience=10, verbose=False, mode="min")
+            EarlyStopping(monitor="outer_loop_validation_accuracy", patience=10, verbose=False, mode="max")
         ],
         enable_progress_bar=False,
     )

@@ -36,6 +36,7 @@ class FOMAML(L.LightningModule):
         self.val_episode = 0
         self.automatic_optimization = False
         self.metaLearner = PrototypeMetaModel()
+        torch.set_printoptions(threshold=100)
         print("Training FOMAML with parameters", self.hparams)
 
     def filterEncodingsByLabels(self, labels, training_data, training_labels):
@@ -52,7 +53,7 @@ class FOMAML(L.LightningModule):
         return {
             "optimizer": optimiser,
             "lr_scheduler": {
-                "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(optimiser, patience=5, mode='min', factor=0.5, verbose=True)
+                "scheduler": get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=100)
             }
         }
 
@@ -73,9 +74,14 @@ class FOMAML(L.LightningModule):
         return SGD([{'params': model.metaLearner.parameters()},
                     {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
 
+    def getInnerLoopScheduler(self, optimiser):
+        return get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=self.hparams.warmupSteps)
+
     def computeLabelsAndDistances(self, inputs, encodings, model_1, model_2, location_1, location_2):
-        output_1 = model_1(inputs).to(CPU_DEVICE)
-        output_2 = model_2(inputs).to(CPU_DEVICE)
+        # output_1 = model_1(inputs).to(CPU_DEVICE)
+        # output_2 = model_2(inputs).to(CPU_DEVICE)
+        output_1 = model_1(encodings.to(DEVICE)).to(CPU_DEVICE)
+        output_2 = model_2(encodings.to(DEVICE)).to(CPU_DEVICE)
         # get distances from the prototypes for all inputs
         distances_1 = []
         distances_2 = []
@@ -100,7 +106,7 @@ class FOMAML(L.LightningModule):
                 filteredTrainingLabels.append(training_labels[i])
         return filteredTrainingSentences, np.array(filteredTrainingLabels)
 
-    def runInnerLoopTrainingStep(self, line, model_1, model_2, filteredTrainingSentences, filteredTrainingEncodings,
+    def runInnerLoopTrainingStep(self, line, model_1, model_2, optimisers, filteredTrainingSentences, filteredTrainingEncodings,
                                  filteredTrainingLabels, train):
         trainingParams = {
             'batch_size': 32
@@ -110,8 +116,7 @@ class FOMAML(L.LightningModule):
         predictions = []
         correctLabels = []
         criterion = self.getCriterion()
-        optimiser_1 = self.getInnerLoopOptimiser(model_1)
-        optimiser_2 = self.getInnerLoopOptimiser(model_2)
+        optimiser_1, optimiser_2, scheduler_1, scheduler_2 = optimisers
         optimiser_1.zero_grad()
         optimiser_2.zero_grad()
         training_losses = []
@@ -135,6 +140,8 @@ class FOMAML(L.LightningModule):
                 # update the gradients
                 optimiser_1.step()
                 optimiser_2.step()
+                scheduler_1.step()
+                scheduler_2.step()
                 # zero the parameter gradients
                 optimiser_1.zero_grad()
                 optimiser_2.zero_grad()
@@ -150,6 +157,12 @@ class FOMAML(L.LightningModule):
         # add these models to the GPU if there is a GPU
         innerLoopModel_1.to(ModelUtils.DEVICE)
         innerLoopModel_2.to(ModelUtils.DEVICE)
+        # get optimisers
+        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1)
+        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2)
+        scheduler_1 = self.getInnerLoopScheduler(optimiser_1)
+        scheduler_2 = self.getInnerLoopScheduler(optimiser_2)
+        optimisers = (optimiser_1, optimiser_2, scheduler_1, scheduler_2)
         # filter support encodings and labels to ensure that only line-specific data is used for training
         filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), supportSet,
                                                                                            supportLabels)
@@ -162,7 +175,7 @@ class FOMAML(L.LightningModule):
 
         # use SGD to carry out few-shot adaptation
         for _ in range(self.hparams.steps):
-            self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, filteredTrainingSentences,
+            self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, optimisers, filteredTrainingSentences,
                                           filteredTrainingEncodings, filteredTrainingLabels_2, train)
 
         # delete everything to free the memory
@@ -237,9 +250,9 @@ class FOMAML(L.LightningModule):
                     else:
                         with torch.no_grad():
                             inputs, encodings, labels = data
-                            outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
-                                                                                               supportLines[i].getFirstPrototype().getLocation(),
-                                                                                               supportLines[i].getSecondPrototype().getLocation())
+                            outputs, _, _ = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2,
+                                                                           supportLines[i].getFirstPrototype().getLocation(),
+                                                                           supportLines[i].getSecondPrototype().getLocation())
                             # compute the loss
                             losses_j = criterion(outputs.to(DEVICE), labels.to(DEVICE))
                             outerLoopLoss += losses_j.sum().item()
@@ -284,9 +297,9 @@ class FOMAML(L.LightningModule):
             del supportLines, supportEncodings, queryEncodings
         if train:
             print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses).item())
-            metaOptimiser = self.optimizers()
-            metaOptimiser.step()
-            metaOptimiser.zero_grad()
+            self.optimizers().step()
+            self.lr_schedulers().step()
+            self.optimizers().zero_grad()
 
     def getSortedEpisode(self, data, labels):
         kShot = labels.count(0)
@@ -337,14 +350,13 @@ class FOMAML(L.LightningModule):
         self.log("outer_loop_validation_accuracy", accuracy_score(self.actualLabels, self.predictions), batch_size=len(self.predictions))
         print("validation accuracy for the validation set is", accuracy_score(self.actualLabels, self.predictions), "and the loss is", sum(self.losses), "\n")
         self.log("outer_loop_validation_loss", sum(self.losses).item(), batch_size=len(self.predictions))
-        self.lr_schedulers().step(sum(self.losses))
         torch.cuda.empty_cache()
         return None
 
     def training_step(self, batch, batch_idx):
         # zero the meta learning gradients
         self.resetMetrics()
-        self.metaLearner.zero_grad()
+        self.optimizers().zero_grad()
         self.runMetaWorkflow(batch)
         self.log("outer_loop_training_accuracy", accuracy_score(self.actualLabels, self.predictions))
         self.log("outer_loop_training_loss", sum(self.losses).item())
@@ -356,3 +368,4 @@ class FOMAML(L.LightningModule):
         self.actualLabels = []
         self.losses = []
         self.predictions = []
+

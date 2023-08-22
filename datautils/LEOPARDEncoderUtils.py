@@ -8,9 +8,11 @@ from pathlib import Path
 from datautils.LEOPARDDataUtils import get_labelled_training_sentences, get_labelled_test_sentences, \
     get_labelled_validation_sentences, get_categories, get_labelled_test_sentences_entity_typing, \
     get_labelled_training_sentences_entity_typing
+from utils.ModelUtils import DEVICE
+
 
 def get_model():
-    return BertModel.from_pretrained("bert-base-cased")
+    return BertModel.from_pretrained("bert-base-cased").to(DEVICE)
 
 def get_tokenizer():
     return BertTokenizer.from_pretrained("bert-base-cased")
@@ -21,11 +23,11 @@ def get_labelled_LEOPARD_training_data(category, shot, episode):
     model = get_model()
     tokenizer = get_tokenizer()
     for sentence in sentences:
-        inputs = tokenizer(sentence, return_tensors="pt")
+        inputs = tokenizer(sentence, return_tensors="pt").to(DEVICE)
         outputs = model(**inputs)
         encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
         training_encodings.append(encoding)
-    return torch.stack(training_encodings, dim=0), np.array(training_labels), label_keys
+    return sentences, torch.stack(training_encodings, dim=0), np.array(training_labels), label_keys
 
 def get_labelled_centroids(training_encodings, training_labels):
     centroids = []
@@ -50,7 +52,7 @@ def get_labelled_LEOPARD_test_data(category):
     model = get_model()
     tokenizer = get_tokenizer()
     for sentence in sentences:
-        inputs = tokenizer(sentence, return_tensors="pt")
+        inputs = tokenizer(sentence, return_tensors="pt").to(DEVICE)
         outputs = model(**inputs)
         encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
         test_encodings.append(encoding)
@@ -62,7 +64,7 @@ def get_labelled_validation_data(category):
     model = get_model()
     tokenizer = get_tokenizer()
     for sentence in sentences:
-        inputs = tokenizer(sentence, return_tensors="pt")
+        inputs = tokenizer(sentence, return_tensors="pt").to(DEVICE)
         outputs = model(**inputs)
         encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
         test_encodings.append(encoding)
@@ -79,11 +81,11 @@ def write_test_data():
             label = test_labels[i]
             encoding_path = data_path + str(label)
             Path(encoding_path).mkdir(parents=True, exist_ok=True)
-            inputs = tokenizer(sentences[i], return_tensors="pt")
+            inputs = tokenizer(sentences[i], return_tensors="pt").to(DEVICE)
             outputs = model(**inputs)
             encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
             with open(encoding_path + "/" + str(i), 'wb+') as f:
-                np.save(f, encoding.detach().numpy())
+                np.save(f, encoding.detach().cpu().numpy())
 
 def read_test_data(category):
     data_path = "test_data/bert/" + category + "/"
