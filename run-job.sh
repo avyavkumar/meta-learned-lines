@@ -3,10 +3,11 @@
 #SBATCH --mem=4096
 #SBATCH --job-name=meta-learning-lines
 #SBATCH --partition=gpu
-#SBATCH --exclude=erc-hpc-comp030,erc-hpc-vm0[11-18]
+#SBATCH --exclude=erc-hpc-comp040,erc-hpc-comp030,erc-hpc-vm0[11-18]
 #SBATCH --gres=gpu
 #SBATCH --time=48:00:00
 #SBATCH --output=/scratch/users/%u/logs/%j.out
+#SBATCH --signal=SIGUSR1@90
 
 nvidia-debugdump -l
 hostname

@@ -29,6 +29,15 @@ def get_labelled_LEOPARD_training_data(category, shot, episode):
         training_encodings.append(encoding)
     return sentences, torch.stack(training_encodings, dim=0), np.array(training_labels), label_keys
 
+def get_labelled_LEOPARD_training_data_meta_encoded(metaLearner, category, shot, episode):
+    with torch.no_grad():
+        sentences, training_labels, label_keys = get_labelled_training_sentences(category, shot, episode)
+        training_encodings = []
+        for sentence in sentences:
+            encoding = metaLearner(sentence).reshape(-1)
+            training_encodings.append(encoding)
+        return sentences, torch.stack(training_encodings, dim=0), np.array(training_labels), label_keys
+
 def get_labelled_centroids(training_encodings, training_labels):
     centroids = []
     centroid_labels = []
@@ -70,9 +79,7 @@ def get_labelled_validation_data(category):
         test_encodings.append(encoding)
     return test_encodings, test_labels
 
-def write_test_data():
-    model = get_model()
-    tokenizer = get_tokenizer()
+def write_test_data(model):
     for category in get_categories():
         sentences, test_labels = get_labelled_test_sentences(category)
         data_path = "test_data/bert/" + category + "/"
@@ -81,11 +88,10 @@ def write_test_data():
             label = test_labels[i]
             encoding_path = data_path + str(label)
             Path(encoding_path).mkdir(parents=True, exist_ok=True)
-            inputs = tokenizer(sentences[i], return_tensors="pt").to(DEVICE)
-            outputs = model(**inputs)
-            encoding = outputs.last_hidden_state[:, 0, :].reshape(-1)
-            with open(encoding_path + "/" + str(i), 'wb+') as f:
-                np.save(f, encoding.detach().cpu().numpy())
+            with torch.no_grad():
+                encoding = model(sentences[i]).reshape(-1)
+                with open(encoding_path + "/" + str(i), 'wb+') as f:
+                    np.save(f, encoding.detach().cpu().numpy())
 
 def read_test_data(category):
     data_path = "test_data/bert/" + category + "/"

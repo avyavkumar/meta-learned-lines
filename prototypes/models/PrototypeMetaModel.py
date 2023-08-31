@@ -17,7 +17,7 @@ class PrototypeMetaModel(nn.Module, PrototypeModel):
         # self.metaOutput = nn.Linear(HIDDEN_MODEL_SIZE, META_OUTPUT_SIZE)
         # self.relu = nn.ReLU()
         # self.dropout = nn.Dropout(p=0.1)
-        self.tunableLayers = {str(l) for l in range(10, 12)}
+        self.tunableLayers = {str(l) for l in range(9, 12)}
         self.assignTrainableParams()
 
     def assignTrainableParams(self):

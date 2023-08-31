@@ -12,6 +12,7 @@ from transformers import AdamW, get_constant_schedule_with_warmup
 from datautils.LEOPARDDataUtils import get_labelled_test_sentences
 from datautils.LEOPARDEncoderUtils import get_model, get_tokenizer
 from lines.LineGenerator import LineGenerator
+from training_datasets.SentenceDataset import SentenceDataset
 from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
 from utils.ModelUtils import DEVICE
 
@@ -47,15 +48,9 @@ class MetaClassifier:
         # random.seed(42)
 
         training_sentences = training_set['sentences']
-        training_encodings = training_set["encodings"]
         training_labels = training_set["labels"]
 
         test_validation_sentences, test_validation_labels = get_labelled_test_sentences(params["category"])
-        test_validation_encodings = []
-        with torch.no_grad():
-            for test_i in range(len(test_validation_sentences)):
-                encoding = self.metaLearner(test_validation_sentences[test_i]).reshape(-1)
-                test_validation_encodings.append(encoding)
         test_validation_labels = [self.labelKeys[label] for label in test_validation_labels]
 
         criterion = self.getCriterion(params)
@@ -78,19 +73,15 @@ class MetaClassifier:
             epochs = self.getEpochs(params, len(line.getLabels()))
 
             # filter the dataset for the required labels
-            filteredTrainingData, filteredTrainingLabels_1 = self.filterEncodingsByLabels(line.getLabels(), training_encodings, training_labels)
-            filteredTrainingSentences, filteredTrainingLabels_2 = self.filterSentencesByLabels(line.getLabels(), training_sentences, training_labels)
-            assert all(x == y for x, y in zip(filteredTrainingLabels_1, filteredTrainingLabels_2)) == True
-            filteredTrainingLabels = [line.getLabelDict()[label] for label in filteredTrainingLabels_1]
+            filteredTrainingSentences, filteredTrainingLabels = self.filterSentencesByLabels(line.getLabels(), training_sentences, training_labels)
+            filteredTrainingLabels = [line.getLabelDict()[label] for label in filteredTrainingLabels]
 
-            filteredTestValidationData, filteredTestValidationLabels_1 = self.filterEncodingsByLabels(line.getLabels(), test_validation_encodings, test_validation_labels)
-            filteredTestValidationSentences, filteredTestValidationLabels_2 = self.filterSentencesByLabels(line.getLabels(), test_validation_sentences, test_validation_labels)
-            assert all(x == y for x, y in zip(filteredTestValidationLabels_1, filteredTestValidationLabels_2)) == True
-            filteredTestValidationLabels = [line.getLabelDict()[label] for label in filteredTestValidationLabels_2]
+            filteredTestValidationSentences, filteredTestValidationLabels = self.filterSentencesByLabels(line.getLabels(), test_validation_sentences, test_validation_labels)
+            filteredTestValidationLabels = [line.getLabelDict()[label] for label in filteredTestValidationLabels]
 
-            training_dataset = SentenceEncodingDataset(filteredTrainingSentences, filteredTrainingData, filteredTrainingLabels)
+            training_dataset = SentenceDataset(filteredTrainingSentences, filteredTrainingLabels)
             train_loader = torch.utils.data.DataLoader(training_dataset, **training_params)
-            test_validation_dataset = SentenceEncodingDataset(filteredTestValidationSentences, filteredTestValidationData, filteredTestValidationLabels)
+            test_validation_dataset = SentenceDataset(filteredTestValidationSentences, filteredTestValidationLabels)
             test_validation_loader = torch.utils.data.DataLoader(test_validation_dataset, **training_params)
 
             prototype_1 = line.getFirstPrototype()
@@ -117,9 +108,10 @@ class MetaClassifier:
                     optimiser_2.zero_grad()
 
                     # get the inputs; data is a list of [inputs, labels]
-                    sentences, encodings, labels = data
+                    sentences, labels = data
+                    encodings = self.getEncodings(sentences, prototype_1.getPrototypeModel(), prototype_2.getPrototypeModel())
+
                     outputs, distances_1, distances_2 = self.computeLabelsAndDistances(sentences, encodings, prototype_1, prototype_2)
-                    print(labels)
 
                     # # convert labels to arg values
                     # labels = self.convertLabels(line.getLabelDict(), labels)
@@ -153,8 +145,9 @@ class MetaClassifier:
                         prototype_1.getPrototypeModel().eval()
                         prototype_2.getPrototypeModel().eval()
                         for j, val_data in enumerate(test_validation_loader, 0):
-                            val_sentences, val_encodings, val_labels = val_data
+                            val_sentences, val_labels = val_data
                             # val_labels = self.convertLabels(line.getLabelDict(), val_labels)
+                            val_encodings = self.getEncodings(val_sentences, prototype_1.getPrototypeModel(), prototype_2.getPrototypeModel())
                             val_outputs, _, _ = self.computeLabelsAndDistances(val_sentences, val_encodings, prototype_1, prototype_2)
                             val_losses = criterion(val_outputs, val_labels.to(DEVICE))
                             val_accuracies.append(accuracy_score(val_labels, torch.argmax(val_outputs, dim=1).detach().cpu().numpy()))
@@ -272,6 +265,14 @@ class MetaClassifier:
 
     def getLearningRateScheduler(self, optimiser, params):
         return get_constant_schedule_with_warmup(optimiser, num_warmup_steps=params['warmupSteps'])
+
+    def getEncodings(self, sentences, model_1, model_2):
+        encodings = []
+        with torch.no_grad():
+            for sentence_i in range(len(sentences)):
+                encoding = torch.mean(torch.stack([model_1.metaLearner(sentences[sentence_i]).reshape(-1), model_2.metaLearner(sentences[sentence_i]).reshape(-1)], dim=0), dim=0)
+                encodings.append(encoding)
+        return torch.stack(encodings, dim=0)
 
     def computeLabelsAndDistances(self, sentences, encodings, prototype_1, prototype_2):
 

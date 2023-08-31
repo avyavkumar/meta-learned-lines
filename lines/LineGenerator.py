@@ -29,5 +29,5 @@ class LineGenerator:
             for j in lines_generated[i]:
                 centroids_required.append(centroids[j])
                 centroid_labels_required.append(centroid_labels[j])
-            lines.append(Line(total_classes, torch.stack(centroids_required, dim=0), np.array(centroid_labels_required), self.modelType, metaLearner=metaLearner))
+            lines.append(Line(len(set(centroid_labels_required)), torch.stack(centroids_required, dim=0), np.array(centroid_labels_required), self.modelType, metaLearner=metaLearner))
         return lines

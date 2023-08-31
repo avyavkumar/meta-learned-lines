@@ -53,8 +53,11 @@ class Reptile(L.LightningModule):
         return torch.Tensor(np.array(filteredTrainingData)), np.array(filteredTrainingLabels)
 
     def configure_optimizers(self):
-        optimiser = AdamW(self.metaLearner.parameters(), lr=self.hparams.outerLR)
-        return {"optimizer": optimiser, "lr_scheduler": {"scheduler": MultiStepLR(optimizer=optimiser, milestones=[100000], gamma=0.33, verbose=True)}}
+        optimiser_2 = AdamW(self.metaLearner.parameters(), lr=2e-5)
+        scheduler_2 = MultiStepLR(optimizer=optimiser_2, milestones=[125,225], gamma=0.2, verbose=True)
+        optimiser_3 = AdamW(self.metaLearner.parameters(), lr=self.hparams.outerLR)
+        scheduler_3 = MultiStepLR(optimizer=optimiser_3, milestones=[125,225], gamma=0.2, verbose=True)
+        return [optimiser_2, optimiser_3], [scheduler_2, scheduler_3]
 
     def updateGradients(self, losses, model_1, model_2, distances_1, distances_2):
         losses_1 = losses.clone().detach().cpu()
@@ -69,14 +72,20 @@ class Reptile(L.LightningModule):
     def getCriterion(self):
         return nn.CrossEntropyLoss(reduction='none')
 
-    def getInnerLoopOptimiser(self, model, classes):
-        if classes == 2:
-            return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': 1e-2}], lr=1e-2)
+    def getInnerLoopOptimiser(self, model, classes, train):
+        if train:
+            if classes == 2:
+                return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': 5e-3}], lr=5e-3)
+            else:
+                return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
         else:
-            return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
+            if classes == 2:
+                return AdamW([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': 2e-5}], lr=2e-5)
+            else:
+                return AdamW([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': 5e-5}], lr=5e-5)
 
     def getInnerLoopScheduler(self, optimiser):
-        return get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=self.hparams.steps // 5)
+        return get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=0)
 
     def computeLabelsAndDistances(self, inputs, encodings, model_1, model_2, location_1, location_2):
         output_1 = model_1(inputs).to(CPU_DEVICE)
@@ -151,8 +160,8 @@ class Reptile(L.LightningModule):
         innerLoopModel_2.to(ModelUtils.DEVICE)
         classes = len(set(supportLabels))
         # get optimisers
-        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1, classes)
-        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2, classes)
+        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1, classes, train)
+        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2, classes, train)
         scheduler_1 = self.getInnerLoopScheduler(optimiser_1)
         scheduler_2 = self.getInnerLoopScheduler(optimiser_2)
         optimisers = (optimiser_1, optimiser_2, scheduler_1, scheduler_2)
@@ -202,7 +211,7 @@ class Reptile(L.LightningModule):
                     if train:
                         # printed = False
                         # print("soft label grads were")
-                        # for metaParam in self.softLabelMetaModel.parameters():
+                        # for metaParam in self.metaLearner.parameters():
                         #     if metaParam.requires_grad and not printed:
                         #         print(metaParam.grad)
                         #         printed = True
@@ -289,10 +298,16 @@ class Reptile(L.LightningModule):
             for metaParam in self.metaLearner.parameters():
                 if metaParam.requires_grad:
                     metaParam.grad = metaParam.grad / len(batch[0])
-            # update the soft label model
-            self.optimizers().step()
-            self.lr_schedulers().step()
-            self.optimizers().zero_grad()
+            classes = len(set(batch[1][0]))
+            if classes == 2:
+                # update the soft label model
+                self.optimizers()[0].step()
+                self.lr_schedulers()[0].step()
+                self.optimizers()[0].zero_grad()
+            else:
+                self.optimizers()[1].step()
+                self.lr_schedulers()[1].step()
+                self.optimizers()[1].zero_grad()
 
     def getSortedEpisode(self, data, labels):
         kShot = labels.count(0)
@@ -359,7 +374,8 @@ class Reptile(L.LightningModule):
     def training_step(self, batch, batch_idx):
         # zero the meta learning gradients
         self.resetMetrics()
-        self.optimizers().zero_grad()
+        for optimiser in self.optimizers():
+            optimiser.zero_grad()
         self.trainingTaskName = batch[2]
         print("Running", self.trainingTaskName + "...")
         self.runMetaWorkflow(batch)
