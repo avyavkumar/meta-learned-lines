@@ -8,13 +8,16 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score
 from torch.optim import AdamW
 from torch.optim import SGD
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingWarmRestarts
 from torch.utils.data import DataLoader
+from torchviz import make_dot
 from transformers import get_constant_schedule_with_warmup
 
 from lines.Line import Line
 from lines.LineGenerator import LineGenerator
 from lines.lo_shot_utils import dist_to_line_multiD
+from optimisers.inner_loop_optimisers import LSLRGradientDescentLearningRule
+from prototypes.models.PrototypeMetaLinearModel import PrototypeMetaLinearModel
 from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
 from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
 from utils import ModelUtils
@@ -29,7 +32,7 @@ from utils.ModelUtils import DEVICE, CPU_DEVICE
 
 class MetaFOMAML(L.LightningModule):
 
-    def __init__(self, outerLR, innerLR, outputLR, steps, batchSize, warmupSteps):
+    def __init__(self, outerLR, innerLR, steps, batchSize, warmupSteps):
         super().__init__()
         self.predictions = []
         self.actualLabels = []
@@ -38,6 +41,13 @@ class MetaFOMAML(L.LightningModule):
         self.val_episode = 0
         self.automatic_optimization = False
         self.metaLearner = PrototypeMetaModel()
+        self.innerLoopOptimisersInitialised = False
+        self.optimizer_1 = LSLRGradientDescentLearningRule(DEVICE, self.hparams.steps, init_learning_rate=innerLR)
+        self.optimizer_2 = LSLRGradientDescentLearningRule(DEVICE, self.hparams.steps, init_learning_rate=innerLR)
+        self.optimizer_1.initialise(PrototypeMetaLinearModel(self.metaLearner, 3).named_parameters())
+        self.optimizer_2.initialise(PrototypeMetaLinearModel(self.metaLearner, 3).named_parameters())
+        self.optimizer_1.to(DEVICE)
+        self.optimizer_2.to(DEVICE)
         torch.set_printoptions(threshold=100)
         print("Training MetaFOMAML with parameters", self.hparams)
 
@@ -51,27 +61,32 @@ class MetaFOMAML(L.LightningModule):
         return torch.Tensor(np.array(filteredTrainingData)), np.array(filteredTrainingLabels)
 
     def configure_optimizers(self):
-        optimiser = AdamW(self.metaLearner.parameters(), lr=self.hparams.outerLR)
-        return {"optimizer": optimiser, "lr_scheduler": {"scheduler": MultiStepLR(optimizer=optimiser, milestones=[130], gamma=0.33, verbose=True)}}
+        optimiser = AdamW([{
+            "params": self.metaLearner.parameters(),
+            "lr": self.hparams.outerLR
+        }, {
+            "params": self.optimizer_1.parameters(),
+            "lr": 6e-1
+        }, {
+            "params": self.optimizer_2.parameters(),
+            "lr": 6e-1
+        }], lr=self.hparams.outerLR)
+        return {"optimizer": optimiser, "lr_scheduler": {"scheduler": CosineAnnealingWarmRestarts(optimizer=optimiser, T_0=1500, verbose=True)}}
 
-    def updateGradients(self, losses, model_1, model_2, distances_1, distances_2):
+    def updateGradients(self, losses, grads_1, grads_2, distances_1, distances_2):
         losses_1 = losses.clone().detach().cpu()
         losses_2 = losses.clone().detach().cpu()
         losses_1 = distances_2.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_1
         losses_2 = distances_1.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_2
         loss_ratio_1 = losses_1.sum() / (losses_1.sum() + losses_2.sum())
         loss_ratio_2 = losses_2.sum() / (losses_1.sum() + losses_2.sum())
-        model_1.scaleGradients(loss_ratio_1)
-        model_2.scaleGradients(loss_ratio_2)
+        for grad in grads_1:
+            grad *= loss_ratio_1
+        for grad in grads_2:
+            grad *= loss_ratio_2
 
     def getCriterion(self):
         return nn.CrossEntropyLoss(reduction='none')
-
-    def getInnerLoopOptimiser(self, model):
-        return SGD([{'params': model.metaLearner.bert.parameters()}, {'params': model.linear.parameters(), 'lr': self.hparams.outputLR}], lr=self.hparams.innerLR)
-
-    def getInnerLoopScheduler(self, optimiser):
-        return get_constant_schedule_with_warmup(optimizer=optimiser, num_warmup_steps=self.hparams.steps // 5)
 
     def computeLabelsAndDistances(self, inputs, encodings, model_1, model_2, location_1, location_2):
         output_1 = model_1(inputs).to(CPU_DEVICE)
@@ -100,68 +115,107 @@ class MetaFOMAML(L.LightningModule):
                 filteredTrainingLabels.append(training_labels[i])
         return filteredTrainingSentences, np.array(filteredTrainingLabels)
 
-    def runInnerLoopTrainingStep(self, line, model_1, model_2, optimisers, filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels, train):
+    def get_inner_loop_parameter_dict(self, params):
+        """
+        Returns a dictionary with the parameters to use for inner loop updates.
+        :param params: A dictionary of the network's parameters.
+        :return: A dictionary of the parameters to use for the inner loop optimization process.
+        """
+        return {
+            name: param.to(device=self.device) for name, param in params if param.requires_grad and "learning_rates_dict" not in name
+        }
+
+    def get_static_parameter_dict(self, state_dict, trainable_params):
+        """
+        Returns a dictionary with the parameters to use for inner loop updates.
+        :param params: A dictionary of the network's parameters.
+        :return: A dictionary of the parameters to use for the inner loop optimization process.
+        """
+        return {
+            name: param.to(device=self.device) for name, param in state_dict.items() if name not in trainable_params
+        }
+
+    def runInnerLoopTrainingStep(self, line, model_1, model_2, filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels, step):
         trainingParams = {'batch_size': 32}
         trainingDataset = SentenceEncodingDataset(filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels)
         trainLoader = torch.utils.data.DataLoader(trainingDataset, **trainingParams)
         predictions = []
         correctLabels = []
         criterion = self.getCriterion()
-        optimiser_1, optimiser_2, scheduler_1, scheduler_2 = optimisers
-        optimiser_1.zero_grad()
-        optimiser_2.zero_grad()
         training_losses = []
+        # model_1_static_parameters = {}
+        # model_2_static_parameters = {}
         for i, data in enumerate(trainLoader, 0):
+            # zero the parameter gradients
+            model_1.zero_grad()
+            model_2.zero_grad()
             # get the inputs; data is a list of [inputs, encodings, labels]
             inputs, encodings, labels = data
             outputs, distances_1, distances_2 = self.computeLabelsAndDistances(inputs, encodings, model_1, model_2, line.getFirstPrototype().getLocation(), line.getSecondPrototype().getLocation())
             # compute the loss
             losses = criterion(outputs, labels)
+            model_1_trainable_parameters = self.get_inner_loop_parameter_dict(model_1.named_parameters())
+            # model_1_static_parameters = self.get_static_parameter_dict(model_1.state_dict(), model_1_trainable_parameters.keys())
+            grads_1 = torch.autograd.grad(losses.sum(), model_1_trainable_parameters.values(), retain_graph=True)
+            model_2_trainable_parameters = self.get_inner_loop_parameter_dict(model_2.named_parameters())
+            # model_2_static_parameters = self.get_static_parameter_dict(model_2.state_dict(), model_2_trainable_parameters.keys())
+            grads_2 = torch.autograd.grad(losses.sum(), model_2_trainable_parameters.values())
+            self.updateGradients(losses, grads_1, grads_2, distances_1, distances_2)
+            for grad_1, grad_2 in zip(grads_1, grads_2):
+                grad_1.detach()
+                grad_2.detach()
+            grads_1_dict = dict(zip(model_1_trainable_parameters.keys(), grads_1))
+            grads_2_dict = dict(zip(model_2_trainable_parameters.keys(), grads_2))
+
+            model_1.update_weights(grads_1_dict, step)
+            model_2.update_weights(grads_2_dict, step)
+            # updated_names_weights_dict_2 = self.optimizer_2.update_params(model_2_trainable_parameters, grads_2_dict, step)
+            # model_1_static_parameters.update(updated_names_weights_dict_1)
+            # model_2_static_parameters.update(updated_names_weights_dict_2)
+            # model_1.load_state_dict(model_1_static_parameters)
+            # model_2.load_state_dict(model_2_static_parameters)
+
             predictions_i = torch.argmax(outputs, dim=1).tolist()
             predictions.extend(predictions_i)
             correctLabels.extend(labels)
-            if losses.sum().item() > 0:
-                # calculate the gradients
-                self.manual_backward(losses.sum())
-                training_losses.append(losses.sum().item())
-                # multiply the calculated gradients of each model by a scaling factor
-                self.updateGradients(losses, model_1, model_2, distances_1, distances_2)
-                # update the gradients
-                optimiser_1.step()
-                optimiser_2.step()
-                scheduler_1.step()
-                scheduler_2.step()
-                # zero the parameter gradients
-                optimiser_1.zero_grad()
-                optimiser_2.zero_grad()
-            del outputs, distances_1, distances_2
+            training_losses.append(losses.sum().item())
+
+            del outputs, distances_1, distances_2, grads_1, grads_1_dict, grads_2, grads_2_dict
 
         print("inner loop training loss is", sum(training_losses), "and accuracy is", accuracy_score(correctLabels, predictions))
         self.log("inner_loop_training_loss", sum(training_losses), batch_size=len(training_losses))
         self.log("inner_loop_training_accuracy", accuracy_score(correctLabels, predictions), batch_size=len(predictions))
 
-    def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels, train=True):
+    def trainInnerLoop(self, line: Line, supportSet, supportEncodings, supportLabels):
         # create models for inner loop updates
         innerLoopModel_1 = deepcopy(line.getFirstPrototype().getPrototypeModel())
         innerLoopModel_2 = deepcopy(line.getSecondPrototype().getPrototypeModel())
         # add these models to the GPU if there is a GPU
         innerLoopModel_1.to(ModelUtils.DEVICE)
         innerLoopModel_2.to(ModelUtils.DEVICE)
-        # get optimisers
-        optimiser_1 = self.getInnerLoopOptimiser(innerLoopModel_1)
-        optimiser_2 = self.getInnerLoopOptimiser(innerLoopModel_2)
-        scheduler_1 = self.getInnerLoopScheduler(optimiser_1)
-        scheduler_2 = self.getInnerLoopScheduler(optimiser_2)
-        optimisers = (optimiser_1, optimiser_2, scheduler_1, scheduler_2)
+        innerLoopModel_1.initialise_optimizer(self.optimizer_1)
+        innerLoopModel_2.initialise_optimizer(self.optimizer_2)
+        # if not self.innerLoopOptimisersInitialised:
+        #     self.optimizer_1.initialise(innerLoopModel_1.named_parameters())
+        #     self.optimizer_2.initialise(innerLoopModel_2.named_parameters())
+        #     self.innerLoopOptimisersInitialised = True
         # filter support encodings and labels to ensure that only line-specific data is used for training
         filteredTrainingSentences, filteredTrainingLabels_1 = self.filterSentencesByLabels(line.getLabels(), supportSet, supportLabels)
         filteredTrainingEncodings, filteredTrainingLabels_2 = self.filterEncodingsByLabels(line.getLabels(), supportEncodings, supportLabels)
         # sanity check to ensure that the filtered data is in the correct order
         assert torch.all(torch.eq(torch.tensor(filteredTrainingLabels_1, dtype=torch.int8), torch.tensor(filteredTrainingLabels_2, dtype=torch.int8))) == torch.tensor(True)
 
+        for name, param in innerLoopModel_1.named_parameters():
+            if param.requires_grad and "11.output.dense.weight" in name:
+                print(name, param)
+
         # use SGD to carry out few-shot adaptation
-        for _ in range(self.hparams.steps):
-            self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, optimisers, filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels_2, train)
+        for step in range(self.hparams.steps):
+            self.runInnerLoopTrainingStep(line, innerLoopModel_1, innerLoopModel_2, filteredTrainingSentences, filteredTrainingEncodings, filteredTrainingLabels_2, step)
+
+        for name, param in innerLoopModel_1.named_parameters():
+            if param.requires_grad and "11.output.dense.weight" in name:
+                print(name, param)
 
         # delete everything to free the memory
         del filteredTrainingEncodings
@@ -206,6 +260,13 @@ class MetaFOMAML(L.LightningModule):
                         # get the inputs; data is a list of [inputs, encodings, labels]
                         sentences, encodings, labels = data
                         outputs, distances_1, distances_2 = self.computeLabelsAndDistances(sentences, encodings, model_1, model_2, supportLines[i].getFirstPrototype().getLocation(), supportLines[i].getSecondPrototype().getLocation())
+                        # make a copy of the outputs and detach the outputs
+                        outputs_optimizer = outputs.clone().detach()
+                        # apply a no-op with optimizer_1 and optimizer_2 with detached outputs to add them to the computation graph of optimizers
+
+
+                        # compute loss with them, do a backward pass and scale the gradients
+
                         # compute the loss
                         losses_j = criterion(outputs.to(DEVICE), labels.to(DEVICE))
                         outerLoopLoss += losses_j.sum().item()
@@ -218,6 +279,9 @@ class MetaFOMAML(L.LightningModule):
                         self.losses.extend(losses_j)
                         # calculate the gradients
                         self.manual_backward(losses_j.sum())
+                        for name, param in self.optimizer_1.named_parameters():
+                            if param.requires_grad:
+                                print(name, param.grad)
                         # multiply the calculated gradients of each model by a scaling factor
                         self.updateGradients(losses_j, model_1, model_2, distances_1, distances_2)
                         # in first order approximation, the gradients are the sum of the inner and outer loop models
@@ -250,6 +314,7 @@ class MetaFOMAML(L.LightningModule):
                             self.losses.append(outerLoopLoss)
         if train:
             print("outer loop training accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions), "and loss is", outerLoopLoss)
+            # do a step of the optimizers
         else:
             print("outer loop episodic validation accuracy is", accuracy_score(outerLoopLabels, outerLoopPredictions), "and loss is", outerLoopLoss)
             self.log("outer_loop_validation_loss_" + str(self.val_episode), outerLoopLoss, batch_size=len(outerLoopLabels))
@@ -276,12 +341,16 @@ class MetaFOMAML(L.LightningModule):
                 if len(set(supportLine.getLabels())) == 1:
                     continue
                 # perform few-shot adaptation on the support set
-                self.trainInnerLoop(supportLine, supportSet, supportEncodings, supportLabels, train)
+                self.trainInnerLoop(supportLine, supportSet, supportEncodings, supportLabels)
             # calculate the loss on the query set
             self.runOuterLoop(supportLines, supportEncodings, supportLabels, querySet, queryEncodings, queryLabels, train)
             del supportLines, supportEncodings, queryEncodings
         if train:
             print("outer loop accuracy is", accuracy_score(self.actualLabels, self.predictions), "and total loss is", sum(self.losses).item())
+            # normalise the gradients
+            for metaParam in self.metaLearner.parameters():
+                if metaParam.requires_grad:
+                    metaParam.grad = metaParam.grad / len(batch[0])
             # update the soft label model
             self.optimizers().step()
             self.lr_schedulers().step()

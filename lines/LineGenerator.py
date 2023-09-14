@@ -26,6 +26,7 @@ class LineGenerator:
         for i in range(len(lines_generated)):
             centroids_required = []
             centroid_labels_required = []
+            lines_generated[i] = list(set(lines_generated[i]))
             for j in lines_generated[i]:
                 centroids_required.append(centroids[j])
                 centroid_labels_required.append(centroid_labels[j])

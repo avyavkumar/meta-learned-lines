@@ -31,6 +31,7 @@ def get_labelled_LEOPARD_training_data(category, shot, episode):
 
 def get_labelled_LEOPARD_training_data_meta_encoded(metaLearner, category, shot, episode):
     with torch.no_grad():
+        metaLearner.eval()
         sentences, training_labels, label_keys = get_labelled_training_sentences(category, shot, episode)
         training_encodings = []
         for sentence in sentences:

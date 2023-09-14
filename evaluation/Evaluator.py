@@ -96,6 +96,7 @@ class Evaluator:
 
     def getTestEncodings(self, metaLearner, data, labels):
         with torch.no_grad():
+            metaLearner.eval()
             test_encodings = []
             test_labels = labels
             for i in range(len(test_labels)):
@@ -108,6 +109,8 @@ class Evaluator:
         with torch.no_grad():
             prototype_1 = line.getFirstPrototype()
             prototype_2 = line.getSecondPrototype()
+            prototype_1.getPrototypeModel().eval()
+            prototype_2.getPrototypeModel().eval()
             prototype_1.getPrototypeModel().to(DEVICE)
             prototype_2.getPrototypeModel().to(DEVICE)
             output_1 = prototype_1.getPrototypeModel()(sentences).to(CPU_DEVICE)

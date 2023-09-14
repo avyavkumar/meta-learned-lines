@@ -269,9 +269,13 @@ class MetaClassifier:
     def getEncodings(self, sentences, model_1, model_2):
         encodings = []
         with torch.no_grad():
+            model_1.eval()
+            model_2.eval()
             for sentence_i in range(len(sentences)):
                 encoding = torch.mean(torch.stack([model_1.metaLearner(sentences[sentence_i]).reshape(-1), model_2.metaLearner(sentences[sentence_i]).reshape(-1)], dim=0), dim=0)
                 encodings.append(encoding)
+            model_1.train()
+            model_2.train()
         return torch.stack(encodings, dim=0)
 
     def computeLabelsAndDistances(self, sentences, encodings, prototype_1, prototype_2):

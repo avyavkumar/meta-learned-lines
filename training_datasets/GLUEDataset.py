@@ -13,7 +13,7 @@ class GLUEDataset(Dataset):
         self.classLabelIndices = {}
         totalLabels = 0
         for d_i in range(len(datasets)):
-            if 'premise' in datasets[d_i][split][0].keys():
+            if {'premise', 'hypothesis'}.issubset(datasets[d_i][split][0].keys()):
                 premise = datasets[d_i][split]['premise']
                 hypothesis = datasets[d_i][split]['hypothesis']
                 labels = datasets[d_i][split]['label']
@@ -21,7 +21,7 @@ class GLUEDataset(Dataset):
                     concatenated_sentence = '[CLS] ' + premise[i] + ' [SEP] ' + hypothesis[i] + ' [SEP]'
                     self.sentences.append(concatenated_sentence)
                     self.labels.append(labels[i] + totalLabels)
-            elif 'question1' in datasets[d_i][split][0].keys():
+            elif {'question1', 'question2'}.issubset(datasets[d_i][split][0].keys()):
                 question1 = datasets[d_i][split]['question1']
                 question2 = datasets[d_i][split]['question2']
                 labels = datasets[d_i][split]['label']
@@ -29,7 +29,7 @@ class GLUEDataset(Dataset):
                     concatenated_sentence = '[CLS] ' + question1[i] + ' [SEP] ' + question2[i] + ' [SEP]'
                     self.sentences.append(concatenated_sentence)
                     self.labels.append(labels[i] + totalLabels)
-            elif 'sentence1' in datasets[d_i][split][0].keys():
+            elif {'sentence1', 'sentence2'}.issubset(datasets[d_i][split][0].keys()):
                 sentence1 = datasets[d_i][split]['sentence1']
                 sentence2 = datasets[d_i][split]['sentence2']
                 labels = datasets[d_i][split]['label']
@@ -37,12 +37,22 @@ class GLUEDataset(Dataset):
                     concatenated_sentence = '[CLS] ' + sentence1[i] + ' [SEP] ' + sentence2[i] + ' [SEP]'
                     self.sentences.append(concatenated_sentence)
                     self.labels.append(labels[i] + totalLabels)
-            else:
+            elif {'question', 'sentence'}.issubset(datasets[d_i][split][0].keys()):
+                question = datasets[d_i][split]['question']
+                sentence = datasets[d_i][split]['sentence']
+                labels = datasets[d_i][split]['label']
+                for i in range(len(question)):
+                    concatenated_sentence = '[CLS] ' + question[i] + ' [SEP] ' + sentence[i] + ' [SEP]'
+                    self.sentences.append(concatenated_sentence)
+                    self.labels.append(labels[i] + totalLabels)
+            elif {'sentence', 'label'}.issubset(datasets[d_i][split][0].keys()):
                 sentence = datasets[d_i][split]['sentence']
                 labels = datasets[d_i][split]['label']
                 for i in range(len(sentence)):
                     self.sentences.append('[CLS] ' + sentence[i] + ' [SEP]')
                     self.labels.append(labels[i] + totalLabels)
+            else:
+                raise RuntimeError("Unexpected dataset configuration presented")
             totalLabels += len(set(datasets[d_i][split]['label']))
         for label_i in range(len(self.labels)):
             if self.labels[label_i] not in self.classLabelIndices:
@@ -50,7 +60,6 @@ class GLUEDataset(Dataset):
                 self.classLabelIndices[self.labels[label_i]].append(label_i)
             else:
                 self.classLabelIndices[self.labels[label_i]].append(label_i)
-        print(Counter(self.labels))
         self.balanceDataset()
         if length != -1:
             self.truncateDataset(length)
