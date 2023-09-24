@@ -1,10 +1,7 @@
 import random
 
-from validation_datasets.ValidationDataset import ValidationDataset
-
-
 class FewShotValidationEpisodeSampler:
-    def __init__(self, dataset: ValidationDataset, kShot):
+    def __init__(self, dataset, kShot):
         # use twice the number of k shots for support and query set
         self.kShot = kShot * 2
         self.dataset = dataset

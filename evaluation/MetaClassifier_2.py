@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score
+from torch.optim import SGD, Adam
 from torch.utils.data import DataLoader
 from transformers import AdamW, get_constant_schedule_with_warmup
 
@@ -261,7 +262,7 @@ class MetaClassifier:
         return nn.CrossEntropyLoss(reduction=params['reduction'])
 
     def getOptimiser(self, model, params):
-        return AdamW([{'params': model.metaLearner.parameters()}, {'params': model.linear.parameters(), 'lr': params['learning_rate'][params['shot']]}], lr=params['learning_rate'][params['shot']])
+        return AdamW([{'params': model.metaLearner.parameters()}, {'params': model.linear.parameters(), 'lr': params['output_learning_rate'][params['shot']]}], lr=params['inner_learning_rate'][params['shot']])
 
     def getLearningRateScheduler(self, optimiser, params):
         return get_constant_schedule_with_warmup(optimiser, num_warmup_steps=params['warmupSteps'])

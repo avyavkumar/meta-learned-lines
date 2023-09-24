@@ -8,7 +8,7 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score
 from torch.optim import AdamW
 from torch.optim import SGD
-from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingWarmRestarts, CosineAnnealingLR
 from torch.utils.data import DataLoader
 from transformers import get_constant_schedule_with_warmup
 
@@ -39,6 +39,7 @@ class Reptile(L.LightningModule):
         self.losses = []
         self.save_hyperparameters()
         self.val_episode = 0
+        self.MAX_STEPS = 1500
         self.automatic_optimization = False
         self.metaLearner = PrototypeMetaModel()
         torch.set_printoptions(threshold=100)
@@ -54,11 +55,11 @@ class Reptile(L.LightningModule):
         return torch.Tensor(np.array(filteredTrainingData)), np.array(filteredTrainingLabels)
 
     def configure_optimizers(self):
-        optimiser_2 = AdamW(self.metaLearner.parameters(), lr=3e-5)
-        scheduler_2 = CosineAnnealingWarmRestarts(optimizer=optimiser_2, T_0=500, eta_min=1e-5, verbose=True)
-        optimiser_3 = AdamW(self.metaLearner.parameters(), lr=self.hparams.outerLR)
-        scheduler_3 = CosineAnnealingWarmRestarts(optimizer=optimiser_3, T_0=500, eta_min=1e-5, verbose=True)
-        return [optimiser_2, optimiser_3] , [scheduler_2, scheduler_3]
+        optimiser_2 = AdamW(self.metaLearner.parameters(), lr=5e-5)
+        scheduler_2 = CosineAnnealingLR(optimizer=optimiser_2, T_max=self.MAX_STEPS, eta_min=1e-5, verbose=True)
+        # optimiser_3 = AdamW(self.metaLearner.parameters(), lr=self.hparams.outerLR)
+        # scheduler_3 = CosineAnnealingWarmRestarts(optimizer=optimiser_3, T_0=500, eta_min=1e-5, verbose=True)
+        return [optimiser_2], [scheduler_2]
 
     def updateGradients(self, losses, model_1, model_2, distances_1, distances_2):
         losses_1 = losses.clone().detach().cpu()
@@ -255,7 +256,7 @@ class Reptile(L.LightningModule):
 
     def runMetaWorkflow(self, batch, train=True):
         for episode_i in range(len(batch[0])):
-            data, labels = batch[0][episode_i], batch[1][episode_i]
+            data, labels = batch[0][episode_i], batch[1][episode_i] 
             # if the labels are not consistently 0-indexed, remap them for validation loop
             data, labels = self.shuffleAndRemapLabels(data, labels)
             data, labels = self.getSortedEpisode(data, labels)
@@ -284,15 +285,16 @@ class Reptile(L.LightningModule):
                 if metaParam.requires_grad:
                     metaParam.grad = metaParam.grad / len(batch[0])
             classes = len(set(batch[1][0]))
-            if classes == 2:
-                # update the soft label model
-                self.optimizers()[0].step()
-                self.lr_schedulers()[0].step()
-                self.optimizers()[0].zero_grad()
-            else:
-                self.optimizers()[1].step()
-                self.lr_schedulers()[1].step()
-                self.optimizers()[1].zero_grad()
+            # if classes == 2:
+            # update the soft label model
+            self.optimizers().step()
+            if self.current_epoch <= self.MAX_STEPS:
+                self.lr_schedulers().step()
+            self.optimizers().zero_grad()
+            # else:
+            #     self.optimizers()[1].step()
+            #     self.lr_schedulers()[1].step()
+            #     self.optimizers()[1].zero_grad()
 
     def getSortedEpisode(self, data, labels):
         kShot = labels.count(0)
@@ -367,8 +369,9 @@ class Reptile(L.LightningModule):
     def training_step(self, batch, batch_idx):
         # zero the meta learning gradients
         self.resetMetrics()
-        for optimiser in self.optimizers():
-            optimiser.zero_grad()
+        # for optimiser in self.optimizers():
+        #     optimiser.zero_grad()
+        self.optimizers().zero_grad()
         self.trainingTaskName = batch[2]
         print("Running", self.trainingTaskName + "...")
         self.runMetaWorkflow(batch)
