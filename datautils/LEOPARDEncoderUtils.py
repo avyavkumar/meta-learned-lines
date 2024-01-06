@@ -42,7 +42,7 @@ def get_labelled_LEOPARD_training_data_meta_encoded(metaLearner, category, shot,
 def get_labelled_centroids(training_encodings, training_labels):
     centroids = []
     centroid_labels = []
-    for label in set(training_labels):
+    for label in sorted(set(training_labels)):
         centroids_per_label = []
         for i in range(len(training_labels)):
             if training_labels[i] == label:

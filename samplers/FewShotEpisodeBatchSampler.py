@@ -25,7 +25,7 @@ class FewShotEpisodeBatchSampler:
             idx = 0
             batchedData = []
             batchedLabels = []
-            while idx < len(dataset):
+            while idx < len(dataset) and idx < self.batchSize:
                 data, labels = dataset[idx]
                 labels = labels.tolist()
                 # construct the support and query set

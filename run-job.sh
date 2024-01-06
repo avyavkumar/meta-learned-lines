@@ -44,4 +44,4 @@ module --ignore_cache load cuda/11.7.0-gcc-10.3.0
 source /users/${USER}/.bashrc
 source activate /scratch/users/${USER}/conda/meta-learning-lines
 cd /scratch/users/k21036268/meta-learned-lines
-srun python main.py --model $modelType --outerLR $outerLR --innerLR $innerLR --outputLR $outputLR --steps $steps --batchSize 8 --warmupSteps 100 --kShot 8 --kValShot 8 --numTasks 200000 --lengthTasks $lengthTasks
+srun python main.py --model $modelType --outerLR $outerLR --innerLR $innerLR --outputLR $outputLR --steps $steps --batchSize 8 --warmupSteps 100 --kShot 8 --kValShot 8 --numTasks 2000000 --lengthTasks $lengthTasks

@@ -11,10 +11,22 @@ from training_datasets.GLUEDataset import GLUEDataset
 
 class GLUEMetaDataset(Dataset):
     def __init__(self, k, numTasks, length=-1):
-        self.taskNames = ['cola', 'mnli', 'mrpc', 'qnli', 'qqp', 'rte', 'sst2']
+        # self.taskNames = ['cola', 'mrpc', 'mnli', 'qnli', 'qqp', 'rte', 'sst2']
+        self.taskNames = ['cola', 'mrpc', 'qnli', 'qqp', 'rte', 'sst2']
         self.tasks = [GLUEDataset([load_dataset('glue', taskName)], 'train', length) for taskName in self.taskNames]
-        self.tasks.append(GLUEDataset([load_dataset('snli').filter(lambda example: example['label'] != -1)], 'train', length))
-        self.taskNames.append('snli')
+        # for mnli and snli, split the datasets into two columns and make them learn against each other
+        mnli = load_dataset('glue', 'mnli')
+        for i in range(3):
+            filteredMNLI = mnli.filter(lambda example: example['label'] != i)
+            self.tasks.append(GLUEDataset([filteredMNLI], 'train', length))
+            self.taskNames.append("mnli" + str(i))
+        snli = load_dataset('snli').filter(lambda example: example['label'] != -1)
+        for i in range(3):
+            filteredSNLI = snli.filter(lambda example: example['label'] != i)
+            self.tasks.append(GLUEDataset([filteredSNLI], 'train', length))
+            self.taskNames.append("snli" + str(i))
+        # self.tasks.append(GLUEDataset([load_dataset('snli').filter(lambda example: example['label'] != -1)], 'train', length))
+        # self.taskNames.append('snli')
         self.nWays = [len(set(self.tasks[i].getLabels())) for i in range(len(self.taskNames))]
         total = sum([math.sqrt(len(self.tasks[i].getLabels())) for i in range(len(self.taskNames))])
         self.probabilities = [math.sqrt(len(self.tasks[i].getLabels()))/total for i in range(len(self.taskNames))]
@@ -31,8 +43,8 @@ class GLUEMetaDataset(Dataset):
                 l2l.data.transforms.NWays(self.glueDatasets[i], n=len(set(self.glueDatasets[i][:][1]))),
                 l2l.data.transforms.KShots(self.glueDatasets[i], k=k*2),
                 l2l.data.transforms.LoadData(self.glueDatasets[i]),
-                l2l.data.transforms.RemapLabels(self.glueDatasets[i]),
-                l2l.data.transforms.ConsecutiveLabels(self.glueDatasets[i]),
+                # l2l.data.transforms.RemapLabels(self.glueDatasets[i]),
+                # l2l.data.transforms.ConsecutiveLabels(self.glueDatasets[i]),
             ]
             self.taskSet.append(l2l.data.TaskDataset(dataset=self.glueDatasets[i], task_transforms=transforms,
                                             num_tasks=numTasks))

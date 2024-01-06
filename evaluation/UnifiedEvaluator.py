@@ -10,7 +10,9 @@ from datautils.LEOPARDDataUtils import get_labelled_test_sentences
 from lines.Line import Line
 
 from lines.lo_shot_utils import dist_to_line_multiD
-from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
+from prototypes.models.PrototypeMetaLinearModel import PrototypeMetaLinearUnifiedModel
+from prototypes.models.PrototypeMetaModel import PrototypeMetaModel
+from training_datasets.SentenceDataset import SentenceDataset
 from utils.ModelUtils import CPU_DEVICE, DEVICE
 
 
@@ -20,14 +22,15 @@ class Evaluator:
         self.test_encodings = None
         self.test_labels = None
         self.evaluated_test_data = False
+        self.models = None
 
-    def evaluate(self, metaLearner, label_keys, test_params, category, shot, episode):
+    def evaluate(self, metaLearner, supportSet, supportLabels, label_keys, test_params, category, shot, episode):
         classes = len(label_keys.keys())
         predictions = []
         true_labels = []
         assignments = []
         # construct Line objects from the saved models
-        lines = self.getLines(metaLearner, test_params, category, shot, episode)
+        lines, models = self.getLinesAndModels(test_params, category, shot, episode)
 
         if not self.evaluated_test_data:
             self.test_sentences, categorical_test_labels = get_labelled_test_sentences(category)
@@ -40,21 +43,24 @@ class Evaluator:
             nearest = np.argmin(dists)
             assignments.append(nearest)
         for i in range(len(lines)):
-            required_test_encodings = np.array([self.test_encodings[x].detach().cpu().numpy() for x in range((len(assignments))) if assignments[x] == i])
             required_test_sentences = [self.test_sentences[x] for x in range((len(assignments))) if assignments[x] == i]
-            required_test_encodings = torch.from_numpy(required_test_encodings)
-            if required_test_encodings.shape[0] > 0:
+            # fetch the required support set and support labels as well
+            filteredTrainingSentences, filteredTrainingLabels = self.filterSentencesByLabels(lines[i].getLabels(), supportSet, supportLabels)
+            filteredTrainingLabels = [lines[i].getLabelDict()[label] for label in filteredTrainingLabels]
+            if len(required_test_sentences) > 0:
                 required_test_labels = [self.test_labels[x] for x in range((len(assignments))) if assignments[x] == i]
-                test_dataset = SentenceEncodingDataset(required_test_sentences, required_test_encodings, required_test_labels)
-                params = {'batch_size': 32}
+                test_dataset = SentenceDataset(required_test_sentences, required_test_labels)
+                params = {'batch_size': 64}
                 test_loader = torch.utils.data.DataLoader(test_dataset, **params)
                 for point_i, data in enumerate(test_loader):
-                    sentences, encodings, labels = data
-                    outputs = self.computeLabels(sentences, encodings, lines[i])
+                    test_sentences, test_labels = data
+                    models[i].to(DEVICE)
+                    outputs = models[i].forward_test(filteredTrainingSentences, filteredTrainingLabels, test_sentences, lines[i].getLabelDict()[lines[i].getLabels()[0]], lines[i].getLabelDict()[lines[i].getLabels()[-1]])
                     # map predictions to labels
                     predictions_i = self.getPredictions(outputs, lines[i])
                     predictions.extend(predictions_i)
-                    true_labels.extend(labels)
+                    true_labels.extend(test_labels)
+            models[i].to(CPU_DEVICE)
 
         print("For category", category, "and shot =", str(shot) + "...")
         print("Lines used are", len(lines))
@@ -62,6 +68,15 @@ class Evaluator:
         print("Macro f1 score is", f1_score(true_labels, predictions, average='macro'))
         print("Accuracy is", accuracy_score(true_labels, predictions))
         print("Correctly classified points are", np.sum(np.array(true_labels) == np.array(predictions)), "/", len(true_labels), "\n")
+
+    def filterSentencesByLabels(self, labels, training_data, training_labels):
+        filteredTrainingSentences = []
+        filteredTrainingLabels = []
+        for i in range(len(training_labels)):
+            if training_labels[i] in labels:
+                filteredTrainingSentences.append(training_data[i])
+                filteredTrainingLabels.append(training_labels[i])
+        return filteredTrainingSentences, np.array(filteredTrainingLabels)
 
     def getPredictions(self, outputs, line):
         predictedLabels = []
@@ -76,10 +91,11 @@ class Evaluator:
             predictedLabels.append(reverseLookup[argmaxLabels[i]])
         return predictedLabels
 
-    def getLines(self, test_params, category, shot, episode):
+    def getLinesAndModels(self, test_params, category, shot, episode):
         path = "models/" + str(test_params['encoder']) + "/" + str(test_params['type']) + "/" + category + "/" + str(episode) + "/" + str(shot) + "/"
         model_paths = [f for f in listdir(path) if isfile(join(path, f))]
         lines = []
+        models = []
         for model_path in model_paths:
             modelCheckpoint = torch.load(path + model_path)
             centroids = modelCheckpoint['centroids']
@@ -87,12 +103,11 @@ class Evaluator:
             modelType = modelCheckpoint['modelType']
             labelDict = modelCheckpoint['labelDict']
             line = Line(totalClasses=len(set(labels)), centroids=centroids, labels=labels, modelType=modelType, labelDict=labelDict)
-            line.getFirstPrototype().getPrototypeModel().load_state_dict(modelCheckpoint['prototype_1'])
-            line.getFirstPrototype().getPrototypeModel().eval()
-            line.getSecondPrototype().getPrototypeModel().load_state_dict(modelCheckpoint['prototype_2'])
-            line.getSecondPrototype().getPrototypeModel().eval()
+            model = PrototypeMetaLinearUnifiedModel(PrototypeMetaModel(), len(set(labels)))
+            model.load_state_dict(modelCheckpoint['model'])
+            models.append(model)
             lines.append(line)
-        return lines
+        return lines, models
 
     def getTestEncodings(self, metaLearner, data, labels):
         with torch.no_grad():
@@ -104,28 +119,3 @@ class Evaluator:
                 test_encodings.append(encoding)
                 del encoding
             return torch.stack(test_encodings, dim=0), torch.Tensor(test_labels)
-
-    def computeLabels(self, sentences, encodings, line):
-        with torch.no_grad():
-            prototype_1 = line.getFirstPrototype()
-            prototype_2 = line.getSecondPrototype()
-            prototype_1.getPrototypeModel().eval()
-            prototype_2.getPrototypeModel().eval()
-            prototype_1.getPrototypeModel().to(DEVICE)
-            prototype_2.getPrototypeModel().to(DEVICE)
-            output_1 = prototype_1.getPrototypeModel()(sentences).to(CPU_DEVICE)
-            output_2 = prototype_2.getPrototypeModel()(sentences).to(CPU_DEVICE)
-            # get distances from the prototypes for all inputs
-            distances_1 = []
-            distances_2 = []
-            for i in range(encodings.shape[0]):
-                distances_1.append(np.linalg.norm(encodings[i].detach().cpu().numpy() - prototype_1.getLocation().detach().cpu().numpy()))
-                distances_2.append(np.linalg.norm(encodings[i].detach().cpu().numpy() - prototype_2.getLocation().detach().cpu().numpy()))
-            distances_1 = torch.unsqueeze(torch.Tensor(np.array(distances_1)), 1)
-            distances_2 = torch.unsqueeze(torch.Tensor(np.array(distances_2)), 1)
-            # compute the weighted probability distribution
-            outputs = output_1 / distances_1 + output_2 / distances_2
-            # delete the outputs
-            del output_1, output_2
-            # return the final weighted probability distribution
-            return outputs

@@ -43,7 +43,7 @@ def get_labelled_validation_sentences(path, category, balance_and_subsample=True
 
 def balance_and_subsample_dataset(sentences, labels):
     total_classes = len(set(labels))
-    elements_per_class = 300 // total_classes
+    elements_per_class = 20 // total_classes
     subsampled_sentences = []
     subsampled_labels = []
     for class_i in range(total_classes):
@@ -61,10 +61,10 @@ def balance_and_subsample_dataset(sentences, labels):
 def get_validation_data():
     sentences = []
     labels = []
-    for category in get_categories_ratings():
-        cat_sentences, cat_labels = get_labelled_validation_sentences(RATINGS_DATA_PATH, category)
-        sentences.append(cat_sentences)
-        labels.append(cat_labels)
+    # for category in get_categories_ratings():
+    #     cat_sentences, cat_labels = get_labelled_validation_sentences(RATINGS_DATA_PATH, category)
+    #     sentences.append(cat_sentences)
+    #     labels.append(cat_labels)
     for category in get_categories_sentiment():
         cat_sentences, cat_labels = get_labelled_validation_sentences(SENTIMENT_DATA_PATH, category)
         sentences.append(cat_sentences)

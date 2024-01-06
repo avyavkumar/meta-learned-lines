@@ -32,3 +32,14 @@ class LineGenerator:
                 centroid_labels_required.append(centroid_labels[j])
             lines.append(Line(len(set(centroid_labels_required)), torch.stack(centroids_required, dim=0), np.array(centroid_labels_required), self.modelType, metaLearner=metaLearner))
         return lines
+
+    def generateLineIndices(self):
+        training_encodings = self.trainingSet['encodings']
+        training_labels = self.trainingSet['labels']
+
+        centroids, centroid_labels = get_labelled_centroids(training_encodings, training_labels.tolist())
+        k = len(centroid_labels)
+        # invoke Ilia's code
+        dims = training_encodings[0].shape[0]
+        lines_generated = find_lines_R_multiD(training_encodings.detach().cpu().numpy(), training_labels.tolist(), centroids.detach().cpu().numpy(), dims, k - 1)
+        return lines_generated

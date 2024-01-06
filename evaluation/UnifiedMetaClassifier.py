@@ -1,4 +1,5 @@
 import copy
+import random
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -7,15 +8,18 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score
 from torch.optim import SGD, Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-from transformers import AdamW, get_constant_schedule_with_warmup
+from torch.optim import AdamW
+from transformers import get_constant_schedule_with_warmup
 
 from datautils.LEOPARDDataUtils import get_labelled_test_sentences
 from datautils.LEOPARDEncoderUtils import get_model, get_tokenizer
 from lines.LineGenerator import LineGenerator
+from prototypes.models.PrototypeMetaLinearModel import PrototypeMetaLinearUnifiedModel
 from training_datasets.SentenceDataset import SentenceDataset
 from training_datasets.SentenceEncodingDataset import SentenceEncodingDataset
-from utils.ModelUtils import DEVICE
+from utils.ModelUtils import DEVICE, CPU_DEVICE
 
 
 # TODO save the best model
@@ -24,7 +28,7 @@ class MetaClassifier:
 
     def __init__(self, metaLearner, lineGenerator: LineGenerator, trainingParams, params, labelKeys):
         self.metaLearner = copy.deepcopy(metaLearner)
-        self.lines = lineGenerator.generateLines(metaLearner)
+        self.lines = lineGenerator.generateLines()
         self.trainingParams = trainingParams
         self.params = params
         self.printValidationPlot = params['printValidationPlot']
@@ -58,17 +62,18 @@ class MetaClassifier:
 
         directory = "models/" + params["encoder"] + "/cross_entropy/" + params["category"] + "/" + str(params["episode"]) + "/" + str(params["shot"]) + "/"
         Path(directory).mkdir(parents=True, exist_ok=True)
-
-        # for name, param in self.metaLearner.bert.named_parameters():
-        #     if set.intersection(set(name.split('.')), {str(11)}):
-        #         print(name, param)
+        accuracy = 0.0
 
         for idx, line in enumerate(self.lines):
             # do not train if there is only one prototype, save the model and continue
             if len(set(line.getLabels())) == 1:
+                print("Single point line generated...")
                 path = directory + "model_" + line.getModelType() + "_" + str(idx) + ".pt"
-                torch.save({'centroids': line.getCentroids(), 'labels': line.getLabels(), 'modelType': line.getModelType(), 'labelDict': line.getLabelDict(), 'prototype_1': line.getFirstPrototype().getPrototypeModel().state_dict(),
-                    'prototype_2': line.getSecondPrototype().getPrototypeModel().state_dict(), }, path)
+                torch.save({'centroids': line.getCentroids(),
+                            'labels': line.getLabels(),
+                            'modelType': line.getModelType(),
+                            'labelDict': line.getLabelDict(),
+                            'model': PrototypeMetaLinearUnifiedModel(copy.deepcopy(self.metaLearner), classes=1).state_dict()}, path)
                 continue
 
             epochs = self.getEpochs(params, len(line.getLabels()))
@@ -84,15 +89,11 @@ class MetaClassifier:
             train_loader = torch.utils.data.DataLoader(training_dataset, **training_params)
             test_validation_dataset = SentenceDataset(filteredTestValidationSentences, filteredTestValidationLabels)
             test_validation_loader = torch.utils.data.DataLoader(test_validation_dataset, **training_params)
+            model = PrototypeMetaLinearUnifiedModel(copy.deepcopy(self.metaLearner), classes=len(set(filteredTrainingLabels)))
+            model.to(DEVICE)
 
-            prototype_1 = line.getFirstPrototype()
-            prototype_2 = line.getSecondPrototype()
-            prototype_1.getPrototypeModel().to(DEVICE)
-            prototype_2.getPrototypeModel().to(DEVICE)
-            optimiser_1 = self.getOptimiser(prototype_1.getPrototypeModel(), params)
-            optimiser_2 = self.getOptimiser(prototype_2.getPrototypeModel(), params)
-            scheduler_1 = self.getLearningRateScheduler(optimiser_1, params)
-            scheduler_2 = self.getLearningRateScheduler(optimiser_2, params)
+            optimiser = self.getOptimiser(model, params)
+            scheduler = self.getLearningRateScheduler(optimiser, params, classes=len(set(filteredTrainingLabels)))
 
             total_val_accuracies = []
             total_val_losses = []
@@ -100,81 +101,73 @@ class MetaClassifier:
 
             for epoch in range(epochs):  # loop over the dataset multiple times
                 # switch on training mode
-                prototype_1.getPrototypeModel().train()
-                prototype_2.getPrototypeModel().train()
+                model.train()
                 for i, data in enumerate(train_loader, 0):
-
                     # zero the parameter gradients
-                    optimiser_1.zero_grad()
-                    optimiser_2.zero_grad()
+                    optimiser.zero_grad()
 
                     # get the inputs; data is a list of [inputs, labels]
                     sentences, labels = data
-                    encodings = self.getEncodings(sentences, prototype_1.getPrototypeModel(), prototype_2.getPrototypeModel())
+                    label_1 = line.getLabelDict()[line.getLabels()[0]]
+                    label_2 = line.getLabelDict()[line.getLabels()[-1]]
 
-                    outputs, distances_1, distances_2 = self.computeLabelsAndDistances(sentences, encodings, prototype_1, prototype_2)
-
-                    # # convert labels to arg values
-                    # labels = self.convertLabels(line.getLabelDict(), labels)
+                    outputs, distances_1, distances_2 = model(sentences, labels, label_1, label_2)
 
                     # compute the loss
                     losses = criterion(outputs, labels.to(DEVICE))
-
                     # calculate the gradients
                     losses.mean().backward()
-
                     training_losses.append(losses.mean().item())
 
                     # multiply the calculated gradients of each model by a scaling factor
-                    self.updateGradients(losses, prototype_1, prototype_2, distances_1, distances_2)
+                    self.updateGradients(losses, model, distances_1, distances_2)
 
                     # update the gradients
-                    optimiser_1.step()
-                    optimiser_2.step()
+                    optimiser.step()
+                    scheduler.step()
 
-                    # update the learning rate scheduler
-                    scheduler_1.step()
-                    scheduler_2.step()
-
-                    # get the accuracy
-                    accuracy = accuracy_score(labels, torch.argmax(outputs, dim=1).detach().cpu().numpy())
-
-                    total_val_loss = 0.0
-                    val_accuracies = []
-                    with torch.no_grad():
-                        # evaluate on validation set and print statistics
-                        prototype_1.getPrototypeModel().eval()
-                        prototype_2.getPrototypeModel().eval()
-                        for j, val_data in enumerate(test_validation_loader, 0):
-                            val_sentences, val_labels = val_data
-                            # val_labels = self.convertLabels(line.getLabelDict(), val_labels)
-                            val_encodings = self.getEncodings(val_sentences, prototype_1.getPrototypeModel(), prototype_2.getPrototypeModel())
-                            val_outputs, _, _ = self.computeLabelsAndDistances(val_sentences, val_encodings, prototype_1, prototype_2)
-                            val_losses = criterion(val_outputs, val_labels.to(DEVICE))
-                            val_accuracies.append(accuracy_score(val_labels, torch.argmax(val_outputs, dim=1).detach().cpu().numpy()))
-                            total_val_loss += val_losses.sum().item()
-                    if self.printValidationLoss is True:
-                        print("The validation loss after epoch", epoch, "and iteration", i, "is", total_val_loss, "and the accuracy is", np.mean(val_accuracies))
-                    total_val_losses.append(total_val_loss)
-                    total_val_accuracies.append(np.mean(val_accuracies))
-                    # switch the training mode back on
-                    prototype_1.getPrototypeModel().train()
-                    prototype_2.getPrototypeModel().train()
+                    if epoch == epochs - 1:
+                        total_val_loss = 0.0
+                        val_accuracies = []
+                        val_predictions = []
+                        all_val_labels = []
+                        with torch.no_grad():
+                            # evaluate on validation set and print statistics
+                            model.eval()
+                            for j, val_data in enumerate(test_validation_loader, 0):
+                                val_sentences, val_labels = val_data
+                                # val_labels = self.convertLabels(line.getLabelDict(), val_labels)
+                                val_outputs = model.forward_test(sentences, labels, val_sentences, label_1, label_2)
+                                val_losses = criterion(val_outputs, val_labels.to(DEVICE))
+                                val_predictions.extend(torch.argmax(val_outputs, dim=1).detach().cpu().numpy())
+                                all_val_labels.extend(val_labels)
+                                val_accuracies.append(accuracy_score(val_labels, torch.argmax(val_outputs, dim=1).detach().cpu().numpy()))
+                                total_val_loss += val_losses.sum().item()
+                        accuracy = accuracy_score(all_val_labels, val_predictions)
+                        if self.printValidationLoss is True:
+                            print("The validation loss after epoch", epoch, "and iteration", i, "is", total_val_loss, "and the accuracy is", accuracy_score(all_val_labels, val_predictions))
+                        total_val_losses.append(total_val_loss)
+                        total_val_accuracies.append(np.mean(val_accuracies))
+                        # switch the training mode back on
+                        model.train()
 
             with torch.no_grad():
-                prototype_1.getPrototypeModel().eval()
-                prototype_2.getPrototypeModel().eval()
+                model.eval()
                 path = directory + "model_" + line.getModelType() + "_" + str(idx) + ".pt"
+                # calculate the centroids
+                centroids = []
+                # for label in line.getLabels():
+                #     centroids.append(torch.mean(model.metaLearner([filteredTrainingSentences[x] for x in range(len(filteredTrainingSentences)) if filteredTrainingLabels[x] == line.getLabelDict()[label]]), dim=0))
                 torch.save({
                     'centroids': line.getCentroids(),
                     'labels': line.getLabels(),
                     'modelType': line.getModelType(),
                     'labelDict': line.getLabelDict(),
-                    'prototype_1': prototype_1.getPrototypeModel().state_dict(),
-                    'prototype_2': prototype_2.getPrototypeModel().state_dict()}, path)
+                    'model': model.state_dict()}, path)
 
             if self.printValidationPlot is True:
                 self.generateTrainingStats(training_losses, total_val_losses, total_val_accuracies)
+        return accuracy
 
     def generateTrainingStats(self, training_losses, test_validation_losses, test_validation_accuracies):
         # plot the graph
@@ -197,15 +190,6 @@ class MetaClassifier:
         print("The corresponding test validation accuracy is", test_validation_accuracies[min_index])
         print("The accuracy at the last iteration is", test_validation_accuracies[-1], "\n")
 
-    def filterEncodingsByLabels(self, labels, training_data, training_labels):
-        filteredTrainingData = []
-        filteredTrainingLabels = []
-        for i in range(len(training_labels)):
-            if training_labels[i] in labels:
-                filteredTrainingData.append(training_data[i].detach().cpu().numpy())
-                filteredTrainingLabels.append(training_labels[i])
-        return torch.Tensor(np.array(filteredTrainingData)), np.array(filteredTrainingLabels)
-
     def filterSentencesByLabels(self, labels, training_data, training_labels):
         filteredTrainingSentences = []
         filteredTrainingLabels = []
@@ -225,32 +209,14 @@ class MetaClassifier:
             predictedLabels.append(reverseLookup[argmaxLabels[i]])
         return predictedLabels
 
-    def updateGradients(self, losses, prototype_1, prototype_2, distances_1, distances_2):
-        """
-        The pseudocode for scaling gradients is as follows
-            for each loss
-              divide the loss by the sum of the distances
-              compute loss for the first model by multiplying loss*(distance_2/(distance_1 + distance_2))
-              compute loss for the second model by multiplying loss*(distance_2/(distance_1 + distance_2))
-            get the ratio of the losses
-            multiply the gradients by the factor required
-        :param losses: the losses per mini-batch
-        :param prototype_1: the first soft-label prototype in the line
-        :param prototype_2: the second soft-label prototype in the line
-        :param distances_1: the distances from the first soft-label prototype in the mini-batch
-        :param distances_2: the distances from the second soft-label prototype in the mini-batch
-        """
-        losses_1 = losses.clone().detach()
-        losses_2 = losses.clone().detach()
-
-        losses_1 = distances_2.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_1
-        losses_2 = distances_1.squeeze(1) / torch.sum(torch.cat((distances_1, distances_2), 1), dim=1) * losses_2
-
-        loss_ratio_1 = (losses_1.sum() / (losses_1.sum() + losses_2.sum()))
-        loss_ratio_2 = (losses_2.sum() / (losses_1.sum() + losses_2.sum()))
-
-        prototype_1.getPrototypeModel().scaleGradients(loss_ratio_1)
-        prototype_2.getPrototypeModel().scaleGradients(loss_ratio_2)
+    def updateGradients(self, losses, model, distances_1, distances_2):
+        losses_1 = losses.clone().detach().cpu()
+        losses_2 = losses.clone().detach().cpu()
+        losses_1 = distances_2.to(CPU_DEVICE).squeeze(1) / torch.sum(torch.cat((distances_1.to(CPU_DEVICE), distances_2.to(CPU_DEVICE)), 1), dim=1) * losses_1
+        losses_2 = distances_1.to(CPU_DEVICE).squeeze(1) / torch.sum(torch.cat((distances_1.to(CPU_DEVICE), distances_2.to(CPU_DEVICE)), 1), dim=1) * losses_2
+        loss_ratio_1 = losses_1.sum() / (losses_1.sum() + losses_2.sum())
+        loss_ratio_2 = losses_2.sum() / (losses_1.sum() + losses_2.sum())
+        model.scaleModelGradients(loss_ratio_1, loss_ratio_2)
 
     def convertLabels(self, labelDict, labels):
         argLabels = []
@@ -262,24 +228,15 @@ class MetaClassifier:
         return nn.CrossEntropyLoss(reduction=params['reduction'])
 
     def getOptimiser(self, model, params):
-        return SGD([{'params': model.metaLearner.parameters()},
-                    {'params': model.linear.parameters(), 'lr': params['output_learning_rate'][params['shot']]}],
-                   lr=params['inner_learning_rate'][params['shot']])
+        return SGD([{'params': model.metaLearner.parameters(), 'lr': params['inner_learning_rate'][params['shot']]},
+                    {'params': model.linear_1.parameters(), 'lr': params['output_learning_rate'][params['shot']]},
+                    {'params': model.linear_2.parameters(), 'lr': params['output_learning_rate'][params['shot']]}], momentum=0.9, nesterov=True)
+        # return SGD([{'params': model.metaLearner.parameters(), 'lr': params['inner_learning_rate'][params['shot']]},
+        #             {'params': model.linear_1.parameters(), 'lr': params['output_learning_rate'][params['shot']]},
+        #             {'params': model.linear_2.parameters(), 'lr': params['output_learning_rate'][params['shot']]}])
 
-    def getLearningRateScheduler(self, optimiser, params):
-        return get_constant_schedule_with_warmup(optimiser, num_warmup_steps=params['warmupSteps'])
-
-    def getEncodings(self, sentences, model_1, model_2):
-        encodings = []
-        with torch.no_grad():
-            model_1.eval()
-            model_2.eval()
-            for sentence_i in range(len(sentences)):
-                encoding = torch.mean(torch.stack([model_1.metaLearner(sentences[sentence_i]).reshape(-1), model_2.metaLearner(sentences[sentence_i]).reshape(-1)], dim=0), dim=0)
-                encodings.append(encoding)
-            model_1.train()
-            model_2.train()
-        return torch.stack(encodings, dim=0)
+    def getLearningRateScheduler(self, optimiser, params, classes):
+        return CosineAnnealingLR(optimiser,  T_max=self.getEpochs(params, classes), eta_min=params['min_lr'][params['shot']])
 
     def computeLabelsAndDistances(self, sentences, encodings, prototype_1, prototype_2):
 

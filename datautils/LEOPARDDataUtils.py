@@ -20,9 +20,7 @@ def get_labelled_training_sentences(category, shot, episode):
         if file_name.endswith("_" + str(episode) + "_" + str(shot) + ".json"):
             data = json.load(open(data_path + file_name))
             for index in range(len(data)):
-                processed_sentence = data[index]['processed_sent']
-                processed_sentence = processed_sentence.replace('[CLS]', '')
-                processed_sentence = processed_sentence.replace('[SEP]', '')
+                processed_sentence = '[CLS] ' + data[index]['sentence1'] + ' [SEP]'
                 label = data[index]['label']
                 sentences.append(processed_sentence)
                 # convert categorical labels to numeric values
@@ -40,9 +38,7 @@ def get_labelled_test_sentences(category):
         if file_name.endswith("_eval.json"):
             data = json.load(open(data_path + file_name))
             for index in range(len(data)):
-                processed_sentence = data[index]['processed_sent']
-                processed_sentence = processed_sentence.replace('[CLS]', '')
-                processed_sentence = processed_sentence.replace('[SEP]', '')
+                processed_sentence = '[CLS] ' + data[index]['sentence1'] + ' [SEP]'
                 label = data[index]['label']
                 sentences.append(processed_sentence)
                 labels.append(label)

@@ -9,6 +9,9 @@ class Prototype:
     def getLocation(self):
         return self.location
 
+    def setLocation(self, location):
+        self.location = location
+
     def getPrototypeModel(self):
         return self.prototypeModel
 
